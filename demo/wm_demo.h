@@ -69,6 +69,19 @@
 //adc demo
 #define DEMO_ADC					(DEMO_OFF && DEMO_CONSOLE)
 
+//slave spi demo
+#define DEMO_SLAVE_SPI				(DEMO_OFF && DEMO_CONSOLE)
+
+//7816
+#define DEMO_7816					(DEMO_OFF && DEMO_CONSOLE)
+
+//touch sensor
+#define DEMO_TOUCHSENSOR           (DEMO_OFF && DEMO_CONSOLE)
+
+//LCD
+#define DEMO_LCD                    (DEMO_OFF && DEMO_CONSOLE)
+
+
 //ssl server demo
 #define DEMO_SSL_SERVER				(DEMO_OFF && DEMO_CONSOLE)
 
@@ -81,7 +94,16 @@
 #define DEMO_SCAN					(DEMO_OFF && DEMO_CONSOLE)
 #define DEMO_HTTPS                  (DEMO_OFF && DEMO_CONSOLE)
 #define DEMO_MQTT                   (DEMO_OFF && DEMO_CONSOLE)
+#define DEMO_SDIO_HOST              (DEMO_OFF && DEMO_CONSOLE)
+#define DEMO_FATFS                  (DEMO_OFF && DEMO_CONSOLE)
 #define DEMO_MBEDTLS                (DEMO_OFF && DEMO_CONSOLE)
+
+
+#define DEMO_DSP					(DEMO_OFF && DEMO_CONSOLE)
+
+#define DEMO_BT                     (DEMO_OFF && DEMO_CONSOLE)
+
+#define DEMO_AVOID_COPY             (DEMO_OFF && DEMO_CONSOLE)
 
 ////////////////////////////////////////////////////////////////
 

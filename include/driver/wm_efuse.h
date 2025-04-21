@@ -24,13 +24,39 @@ enum {
 	CMD_TX_IQ_PHASE,
 	CMD_RX_IQ_PHASE,
 	CMD_TX_GAIN,
+	CMD_TX_ADC_CAL,
+	CMD_FREQ_ERR,
+	CMD_RF_CAL_FLAG,
 	CMD_ALL,
 };
 
-#define VCG_ADDR  (FT_MAGICNUM_ADDR + sizeof(FT_PARAM_ST)+4)
-#define VCG_LEN    (4)
+#define FREQERR_ADDR  (FT_MAGICNUM_ADDR + sizeof(FT_PARAM_ST))
+#define FREQERR_LEN  (4)
+#define CAL_FLAG_ADDR  (FT_MAGICNUM_ADDR + sizeof(FT_PARAM_ST)+4)
+#define CAL_FLAG_LEN    (4)
+
 //#define TX_GAIN_NEW_ADDR (VCG_ADDR+VCG_LEN)
 #define TX_GAIN_LEN   (28*3)
+
+typedef struct FT_ADC_CAL_UNIT
+{
+	unsigned short      ref_val;
+	unsigned short      real_val;
+}FT_ADC_CAL_UINT_ST;
+
+typedef struct FT_ADC_CAL
+{
+	unsigned int       valid_cnt;
+	FT_ADC_CAL_UINT_ST units[6];
+	float              a;
+	float              b;
+}FT_ADC_CAL_ST;
+
+typedef struct FT_TEMP_CAL
+{
+	int       ref_val;
+	int       real_val;
+}FT_TEMP_CAL_ST;
 
 /**
  * @defgroup Driver_APIs Driver APIs
@@ -107,6 +133,26 @@ int tls_get_mac_addr(u8 *mac);
 * @retval		TLS_EFUSE_STATUS_EIO			set failed
 */
 int tls_set_mac_addr(u8 *mac);
+/**
+* @brief 	This function is used to get bluetooth mac addr
+*
+* @param[in]	mac		mac addr,6 byte
+*
+* @retval	 	TLS_EFUSE_STATUS_OK			get success
+* @retval		TLS_EFUSE_STATUS_EIO			get failed
+*/
+int tls_get_bt_mac_addr(u8 *mac);
+
+/**
+* @brief 	This function is used to set bluetooth mac addr
+*
+* @param[in]	mac		mac addr,6 byte
+*
+* @retval	 	TLS_EFUSE_STATUS_OK			set success
+* @retval		TLS_EFUSE_STATUS_EIO			set failed
+*/
+int tls_set_bt_mac_addr(u8 *mac);
+
 
 /**
 * @brief 	This function is used to get tx gain
@@ -232,7 +278,7 @@ int tls_set_rx_iq_phase(u8 *rxPhase);
 /**
 * @brief 	This function is used to set/get freq err
 *
-* @param[in]	freqerr	
+* @param[in]	freqerr	(Unit:Hz),relative to base frequency(chan 1,2,3,4,5......13,14)
 * @param[in]    flag  1-set  0-get
 * @retval	 	TLS_EFUSE_STATUS_OK			set/get success
 * @retval		TLS_EFUSE_STATUS_EIO		set/get failed
@@ -240,15 +286,38 @@ int tls_set_rx_iq_phase(u8 *rxPhase);
 int tls_freq_err_op(u8 *freqerr, u8 flag);
 
 /**
-* @brief 	This function is used to set/get vcg ctrl
+* @brief 	This function is used to set/get cal finish flag
 *
-* @param[in]	vcg	
+* @param[in]	calflag 1- finish calibration, non-1-do not calibration
 * @param[in]    flag  1-set  0-get
 *
-* @retval	 	TLS_EFUSE_STATUS_OK			set/get success
+* @retval	 	TLS_EFUSE_STATUS_OK		set/get success
 * @retval		TLS_EFUSE_STATUS_EIO		set/get failed
 */
-int tls_rf_vcg_ctrl_op(u8 *vcg, u8 flag);
+int tls_rf_cal_finish_op(u8 *calflag, u8 flag);
+
+
+/**
+* @brief 	This function is used to get adc cal param
+*
+* @param[out]	adc_cal		adc cal param
+*
+* @retval	 	TLS_EFUSE_STATUS_OK			get success
+* @retval		TLS_EFUSE_STATUS_EIO		get failed
+*/
+int tls_get_adc_cal_param(FT_ADC_CAL_ST *adc_cal);
+
+
+/**
+* @brief 	This function is used to set adc cal param
+*
+* @param[out]	adc_cal		adc cal param
+*
+* @retval	 	TLS_EFUSE_STATUS_OK			get success
+* @retval		TLS_EFUSE_STATUS_EIO		get failed
+*/
+int tls_set_adc_cal_param(FT_ADC_CAL_ST *adc_cal);
+
 
 /**
  * @}

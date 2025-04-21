@@ -46,13 +46,13 @@ tls_bt_status_t tls_ble_dm_init(tls_ble_dm_callback_t callback);
 /**
  * @brief          start/stop ble advertisement
  *
- * @param[in]      start      TRUE enable; FALSE disable
+ * @param[in]      start      1 connectable and discoverable; 2 disconnectable and discoverable; 0 stop
  *
  * @return         @ref tls_bt_status_t
  *
  * @note           None
  */
-tls_bt_status_t tls_ble_adv(bool start);
+tls_bt_status_t tls_ble_adv(uint8_t adv_state);
 
 /**
  * @brief          configure the advertisment content
@@ -61,7 +61,9 @@ tls_bt_status_t tls_ble_adv(bool start);
  *
  * @retval         @ref tls_bt_status_t
  *
- * @note           None
+ * @note           if pure_data equals to true, the filed of manufacturer equals to all fileds of advetisement data.
+ *                     otherwise, the filed manufacturer will be advertised in 0xFF filed. 
+ *
  */
 tls_bt_status_t tls_ble_set_adv_data(tls_ble_dm_adv_data_t *data);
 
@@ -75,6 +77,18 @@ tls_bt_status_t tls_ble_set_adv_data(tls_ble_dm_adv_data_t *data);
  * @note           None
  */
 tls_bt_status_t tls_ble_set_adv_param(tls_ble_dm_adv_param_t *param);
+
+/**
+ * @brief          configure the advertisment extented parameters
+ *
+ * @param[in]      *param        @ref tls_ble_dm_adv_ext_param_t
+ *
+ * @retval         @ref tls_bt_status_t
+ *
+ * @note           if you know how to config all the parameters, you can use this function; otherwise, tls_ble_set_adv_param will be recommanded strongly;
+ */
+tls_bt_status_t tls_ble_set_adv_ext_param(tls_ble_dm_adv_ext_param_t *param);
+
 
 /**
  * @brief          start/stop ble scan
@@ -92,13 +106,14 @@ tls_bt_status_t tls_ble_scan(bool start);
  *
  * @param[in]      window        scan window size
  * @param[in]      interval      scan interval length
+ * @param[in]     scan mode    0 passive scan; 1 active scan;
  *
  * @retval         @ref tls_bt_status_t
  *
  * @note           interval should greater or equals to windows,
  *                 both range should be within (0x0004, 0x4000)
  */
-tls_bt_status_t tls_ble_set_scan_param(int window, int interval);
+tls_bt_status_t tls_ble_set_scan_param(int window, int interval, uint8_t scan_mode);
 
 /**
  * @brief          enable a async process evt
@@ -160,13 +175,66 @@ tls_bt_status_t tls_ble_conn_parameter_update(const tls_bt_addr_t *bd_addr,
  *
  * @param[in]      *bd_addr         remote device address
  *
- * @return         dbm
+ * @return         @ref tls_bt_status_t
  *
  * @note           None
  */
-int8_t tls_dm_read_remote_rssi(const tls_bt_addr_t *bd_addr);
+tls_bt_status_t tls_dm_read_remote_rssi(const tls_bt_addr_t *bd_addr);
 
 
+/**
+ * @brief          config the io capabilities of local device
+ *
+ * @param[in]      io_cap        
+ *
+ * @return         @ref tls_bt_status_t
+ *
+ * @note           None
+ */
+
+tls_bt_status_t tls_ble_set_sec_io_cap(uint8_t io_cap);
+
+/**
+ * @brief          config the auth requirement of local device
+ *
+ * @param[in]      auth_req        
+ *
+ * @return         @ref tls_bt_status_t
+ *
+ * @note           None
+ */
+
+tls_bt_status_t tls_ble_set_sec_auth_req(uint8_t auth_req);
+
+/**
+ * @brief       This function is called to ensure that connection is
+ *                  encrypted.  Should be called only on an open connection.
+ *                  Typically only needed for connections that first want to
+ *                  bring up unencrypted links, then later encrypt them.
+
+ * @param[in]sec_act       - This is the security action to indicate
+ *                                 what knid of BLE security level is required for
+ *                                 the BLE link if the BLE is supported      
+ * @param[in]bd_addr       - Address of the peer device
+ * @ref tls_bt_status_t
+ *
+ * @note           None
+ */
+
+tls_bt_status_t tls_ble_set_sec(const tls_bt_addr_t *bd_addr, uint8_t sec_act);
+
+/**
+ * @brief          only used to start/stop ble advertisement
+ *
+ * @param[in]      start  1 start advertisement; 0 stop advertisement;
+ * @param[in]     duration valid for start advertisement. 0 for forever, otherwise the last seconds of advertisement
+ *
+ * @return         @ref tls_bt_status_t
+ *
+ * @note           None
+ */
+
+tls_bt_status_t tls_ble_gap_adv(uint8_t start, int duration);
 
 /**
  * @}

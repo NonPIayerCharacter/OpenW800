@@ -35,5 +35,7 @@ char * strdup(const char *s);
 char * strndup(const char *s, size_t len);
 
 int sendchar(int ch);
+void dumpBuffer(char *name, char* buffer, int len);
+void dumpUint32(char *name, uint32_t* buffer, int len);
 
 #endif /* UTILS_H */

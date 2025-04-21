@@ -73,6 +73,7 @@
 #include "wm_socket.h"
 #include "wm_sockets.h"
 #include "wm_wifi.h"
+#include "wm_hspi.h"
 #include "wm_pwm.h"
 #include "wm_params.h"
 #include "wm_osal.h"
@@ -81,7 +82,6 @@
 #include "wm_mem.h"
 #include "wm_demo.h"
 #include "wm_regs.h"
-#include "FreeRTOS.h"
 
 
 #endif

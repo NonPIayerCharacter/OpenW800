@@ -942,11 +942,13 @@ int main(int ac, char **av)
 {
 	char *mode;
 	int res;
-    
+
+#if 0
     if (!strncmp(getenv("LANG"), "zh_CN", strlen("zh_CN")))
         g_lang_index = 1;
     else
         g_lang_index = 0;
+#endif
 
 	setlocale(LC_ALL, "");
 	bindtextdomain(PACKAGE, LOCALEDIR);

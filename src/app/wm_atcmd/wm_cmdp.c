@@ -35,10 +35,21 @@
 #include "wm_efuse.h"
 #include "wm_dhcp_server.h"
 #include "wm_wifi_oneshot.h"
+#include "wm_ram_config.h"
+#include "wm_pmu.h"
 
 extern const char FirmWareVer[];
 extern const char HwVer[];
 tls_os_timer_t *RSTTIMER = NULL;
+tls_os_timer_t *chippowersavetimer = NULL;
+typedef struct chip_lowpower_st{
+	u32 lowpowertype;
+	u32 lowpowertime;
+	u32 wakesource;	
+}chip_lowerpower_struct;
+
+chip_lowerpower_struct st_chiplowpower;
+
 
 u8 gfwupdatemode = 0;
 u8 tls_get_fwup_mode(void){
@@ -168,6 +179,7 @@ int hostif_cipher2host(int cipher, int proto)
 
 static void ResetTimerProc(void *ptmr, void *parg)
 {
+	tls_sys_set_reboot_reason(REBOOT_REASON_ACTIVE);
     tls_sys_reset();
 }
 
@@ -212,6 +224,56 @@ int tls_cmd_reset_flash(void)
     return err;
 }
 
+static void delay_enter_chip_lowpower_timeout(void *ptmr, void *parg)
+{
+    chip_lowerpower_struct *stchiplp = (chip_lowerpower_struct *)parg;
+    if (stchiplp->wakesource == 1)
+    {
+		tls_pmu_timer0_start(stchiplp->lowpowertime/1000);
+    }
+
+	switch(stchiplp->lowpowertype)
+	{
+		case 1:
+			tls_pmu_standby_start();
+			break;
+		case 2:
+	    	tls_pmu_sleep_start();
+			break;
+		default:
+			break;
+	}
+}
+
+
+void tls_cmd_chip_low_power_function(u32 lowpowertype, u32 wakesource, u32 delaytime, u32 lowpowertime)
+{
+	int err;
+
+	st_chiplowpower.lowpowertype = lowpowertype;
+	st_chiplowpower.wakesource = wakesource;
+	st_chiplowpower.lowpowertime = lowpowertime;	
+
+	if(chippowersavetimer == NULL)
+	{
+		err = tls_os_timer_create(&chippowersavetimer,
+							delay_enter_chip_lowpower_timeout,
+							&st_chiplowpower,
+							delaytime/2,
+							FALSE,
+							NULL);
+		if(TLS_OS_SUCCESS == err)
+		{
+			tls_os_timer_start(chippowersavetimer);
+		}
+	}
+	else
+	{
+		tls_os_timer_change(chippowersavetimer,delaytime);
+	}
+}
+
+
 int tls_cmd_ps( struct tls_cmd_ps_t *ps)
 {
 /* TODO: not just close wifi rx&tx,
@@ -243,10 +305,10 @@ int tls_cmd_ps( struct tls_cmd_ps_t *ps)
             tls_wl_if_ps(0);
         }
     } else if (ps->ps_type == 1){/*standby*/
-        tls_wl_if_standby(ps->wake_type, ps->delay_time,
+		tls_cmd_chip_low_power_function(ps->ps_type, ps->wake_type, ps->delay_time,
                 ps->wake_time);
     }else if (ps->ps_type == 2){/*sleep*/
-        tls_wl_if_sleep(ps->wake_type, ps->delay_time,
+        tls_cmd_chip_low_power_function(ps->ps_type, ps->wake_type, ps->delay_time,
                 ps->wake_time);
     }
 #endif
@@ -284,6 +346,46 @@ int tls_cmd_scan( enum tls_cmd_mode mode)
 
     return CMD_ERR_OK;
 }
+
+int tls_cmd_scan_by_param( enum tls_cmd_mode mode, u16 channellist, u32 times, u16 switchinterval, u16 scantype)
+{
+
+    int ret=0;
+    struct tls_hostif *hif = tls_get_hostif();
+    struct tls_wifi_scan_param_t scan_param;
+
+    /* scanning not finished */
+    if (hif->last_scan )
+        return CMD_ERR_BUSY;
+
+    hif->last_scan = 1;
+    hif->last_scan_cmd_mode = mode;
+    
+    /* register scan complt callback*/
+    tls_wifi_scan_result_cb_register(hostif_wscan_cmplt);
+    
+    /* trigger the scan */
+	scan_param.scan_type = scantype;
+    scan_param.scan_chanlist = channellist;
+    scan_param.scan_chinterval = switchinterval;
+    scan_param.scan_times = times;
+    ret = tls_wifi_scan_by_param(&scan_param);
+    if(ret == WM_WIFI_SCANNING_BUSY)
+    {
+    	tls_wifi_scan_result_cb_register(NULL);
+        hif->last_scan = 0;
+        return CMD_ERR_BUSY;
+    }
+    else if(ret == WM_FAILED)
+    {
+    	tls_wifi_scan_result_cb_register(NULL);
+        hif->last_scan = 0;
+        return CMD_ERR_MEM;
+    }
+
+    return CMD_ERR_OK;
+}
+
 
 int tls_cmd_join_net(void)
 {
@@ -401,7 +503,7 @@ int tls_cmd_join( enum tls_cmd_mode mode,
             {
 	           tls_wifi_disconnect();
 	           tls_wifi_softap_destroy();
-            }       
+            }  
             ret = tls_cmd_join_net();
             break;
         
@@ -456,6 +558,12 @@ int tls_cmd_get_link_status(
     struct tls_ethif *ni;
 
     ni=tls_netif_get_ethif();
+
+	if (ni == NULL)
+	{
+		return -1;
+	}
+	
     if (ni->status)
         lks->status = 1;
     else
@@ -1080,6 +1188,10 @@ int tls_cmd_set_ip_info(
     struct tls_param_ip param_ip;
 
     ethif=tls_netif_get_ethif();
+	if (ethif == NULL)
+	{
+		return -1;
+	}
 	//if(tls_param_get_updp_mode() == 0)
 	if (WM_WIFI_JOINED == tls_wifi_get_state())
 	{
@@ -1508,26 +1620,13 @@ int tls_cmd_get_webs( struct tls_webs_cfg *webcfg)
 	return 0;
 }
 
-//extern u32 wpa_debug_level;
-//extern u32 tls_debug_level;
-//extern u32 wl_debug_components;
-
 int tls_cmd_set_dbg( u32 dbg)
 {
-#if 0//TLS_WL_DEBUG //: WANGM: when CONFIG_WPS, it cannot be compiled correctly
-    if (dbg == 0) {
-        /* disable debug info output */
-        //wpa_debug_level = 7;
-        tls_debug_level = 0;
-        //wl_debug_components = 0;
-    } else if (dbg == 1) {
-        //wpa_debug_level = 1;
-        tls_debug_level = TLS_DBG_LEVEL_ALL;
-        //wl_debug_components = 0xFFFF;
-    } else if (dbg == 2) {
-        //tls_mem_alloc_info();
-    } else
-        ;
+#if TLS_CONFIG_LOG_PRINT
+    if (dbg)
+        tls_wifi_enable_log(true);
+    else
+        tls_wifi_enable_log(false);
 #endif
 
     return 0;
@@ -1779,6 +1878,9 @@ int tls_cmd_get_softap_link_status(struct tls_cmd_link_status_t *lks)
     struct netif *netif;
 
     netif = tls_get_netif();
+	if (netif == NULL)
+		return -1;
+	
     netif = netif->next;
 
     if (netif_is_up(netif))

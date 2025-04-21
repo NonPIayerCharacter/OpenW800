@@ -525,7 +525,7 @@ typedef __packed struct HOSTIF_CMD_PARAMS_TXGR{
  }	HOSTIF_CMD_PARAMS_LPCHL;
 
  typedef __packed struct HOSTIF_CMD_PARAMS_LPTSTR {
-	u32      channel;
+	u32      tempcomp;
 	u32      packetcount;
 	u32      psdulen;
 	u32      txgain;
@@ -581,9 +581,9 @@ typedef __packed struct HOSTIF_CMD_PARAMS_TXGR{
     int freqerr;
  }	HOSTIF_CMD_PARAMS_FREQERR;
 
- typedef __packed struct _HOSTIF_CMD_PARAMS_VCGCTRL{
-    int vcg;
- }HOSTIF_CMD_PARAMS_VCGCTRL;
+ typedef __packed struct _HOSTIF_CMD_PARAMS_CALFIN{
+    int val;
+ }HOSTIF_CMD_PARAMS_CALFIN;
  
   
  union HOSTIF_CMD_PARAMS_UNION {
@@ -725,7 +725,7 @@ typedef __packed struct HOSTIF_CMD_PARAMS_TXGR{
 	HOSTIF_CMD_PARAMS_TXLO   txLO;
 	HOSTIF_CMD_PARAMS_TXIQ    txIQ;
 	HOSTIF_CMD_PARAMS_FREQERR  FreqErr;
-	HOSTIF_CMD_PARAMS_VCGCTRL vcgCtrl;
+	HOSTIF_CMD_PARAMS_CALFIN  calfin;
 	
 	HOSTIF_CMD_PARAMS_PING  ping;
 	HOSTIF_CMD_PARAMS_THT	tht;
@@ -1060,9 +1060,9 @@ typedef __packed struct _HOSTIF_CMDRSP_PARAMS_CNTPARAM_BSSID_EN {
     int freqerr;
  }	HOSTIF_CMDRSP_PARAMS_FREQERR;
 
-  typedef __packed struct _HOSTIF_CMDRSP_PARAMS_VCGCTRL{
-    int vcg;
- }	HOSTIF_CMDRSP_PARAMS_VCGCTRL;
+  typedef __packed struct _HOSTIF_CMDRSP_PARAMS_CALFIN{
+    int val;
+ }	HOSTIF_CMDRSP_PARAMS_CALFIN;
 
   typedef __packed struct _HOSTIF_CMDRSP_PARAMS_PING {
 	u32      ext;
@@ -1195,7 +1195,7 @@ typedef __packed struct _HOSTIF_CMDRSP_PARAMS_CNTPARAM_BSSID_EN {
         HOSTIF_CMDRSP_PARAMS_TXLO  txLO;
         HOSTIF_CMDRSP_PARAMS_TXIQ  txIQ;
         HOSTIF_CMDRSP_PARAMS_FREQERR FreqErr;
-        HOSTIF_CMDRSP_PARAMS_VCGCTRL vcgCtrl;
+        HOSTIF_CMDRSP_PARAMS_CALFIN calfin;
 
         HOSTIF_CMDRSP_PARAMS_PING ping;
 }; 
@@ -1330,6 +1330,8 @@ typedef void  (*hostif_send_tx_msg_callback)(u8 hostif_mode, struct tls_hostif_t
 #define UART_ATCMD_BIT_BT        (3)
 #define UART_ATCMD_BIT_ACTIVE_BT (4)
 #define UART_ATCMD_BIT_ACTIVE_BT_DM (5)
+#define UART_ATCMD_BIT_ACTIVE_BT_DM_EXT (6)
+
 
 
 

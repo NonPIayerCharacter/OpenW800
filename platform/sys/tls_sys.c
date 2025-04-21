@@ -45,7 +45,11 @@ struct tls_sys_msg
 };
 #define SYS_TASK_STK_SIZE          384//256
 
-static tls_os_queue_t *msg_queue;
+static tls_os_queue_t *msg_queue = NULL;
+static tls_os_sem_t *sys_task_sem = NULL;
+void tls_sys_task_del(void);
+int  tls_sys_task_init(void);
+
 
 #if TLS_DBG_LEVEL_DUMP
 void TLS_DBGPRT_DUMP(char *p, u32 len)
@@ -113,6 +117,7 @@ static void sys_net_up()
 		  set wifi powersaving flag according to TLS_PARAM_ID_PSM here.*/
 		tls_param_get(TLS_PARAM_ID_PSM, &enable, TRUE); 	
 		tls_wifi_set_psflag(enable, FALSE);
+		tls_netif_set_status(1);
     }
 
     return ;
@@ -182,7 +187,7 @@ static void sys_net_down()
     tls_netif_set_down();
 
     /* Try to reconnect if auto_connect is set*/
-    tls_auto_reconnect();
+    tls_auto_reconnect(1);
 
     return ;
 }
@@ -238,7 +243,7 @@ static void tls_auto_reconnect_softap(void)
 //-------------------------------------------------------------------------
 
 #endif
-void tls_auto_reconnect(void)
+void tls_auto_reconnect(u8 delayflag)
 {
     struct tls_param_ssid ssid;
     u8 auto_reconnect = 0xff;
@@ -266,6 +271,11 @@ void tls_auto_reconnect(void)
     	tls_wifi_auto_connect_flag(WIFI_AUTO_CNT_FLAG_SET, &auto_reconnect);
     	return ; //tmparary return, for active "DISCONNECT" , such as AT CMD
     }
+	if (delayflag)
+	{
+		tls_os_time_delay(1500);
+	}
+
     tls_param_get(TLS_PARAM_ID_WPROTOCOL, (void*) &wireless_protocol, TRUE);
     switch (wireless_protocol)
     {
@@ -282,13 +292,22 @@ void tls_auto_reconnect(void)
 
                 if (bssid.bssid_enable)
                 {
-                    tls_wifi_connect_by_ssid_bssid(ssid.ssid, ssid.ssid_len, bssid.bssid, origin_key.psk,
-                        origin_key.key_length);
+                    if (ssid.ssid_len && (ssid.ssid_len <= 32))
+                    {
+                        tls_wifi_connect_by_ssid_bssid(ssid.ssid, ssid.ssid_len, bssid.bssid, origin_key.psk,
+                            origin_key.key_length);
+                    }
+                    else
+                    {
+                        tls_wifi_connect_by_bssid(bssid.bssid, origin_key.psk, origin_key.key_length);	
+                    }
                 }
                 else
                 {
-                    tls_wifi_connect(ssid.ssid, ssid.ssid_len, origin_key.psk,
-                        origin_key.key_length);
+					if (ssid.ssid_len && (ssid.ssid_len <= 32))
+					{
+						tls_wifi_connect(ssid.ssid, ssid.ssid_len, origin_key.psk, origin_key.key_length);
+					}
                 }
             }
             break;
@@ -336,7 +355,8 @@ static void tls_proc_rmms(struct rmms_msg *msg)
 /*
  * sys task stack
  */
-static u32 sys_task_stk[SYS_TASK_STK_SIZE];
+static u32 *sys_task_stk = NULL;
+tls_os_task_t sys_task_hdl = NULL;
 
 void tls_sys_task(void *data)
 {
@@ -365,7 +385,7 @@ void tls_sys_task(void *data)
                     break;
                 case SYS_MSG_NET2_FAIL:
                     sys_net2_down();
-                    tls_auto_reconnect();
+                    tls_auto_reconnect(1);
                     break;
 #endif
                 case SYS_MSG_NET_DOWN:
@@ -385,7 +405,7 @@ void tls_sys_task(void *data)
                             &auto_reconnect);
                     }
 
-                    tls_auto_reconnect();
+                    tls_auto_reconnect(0);
                     break;
 #if TLS_CONFIG_RMMS
                 case SYS_MSG_RMMS:
@@ -401,6 +421,15 @@ void tls_sys_task(void *data)
         {
 
         }
+		tls_os_sem_acquire(sys_task_sem, 0);
+		if (tls_os_queue_is_empty(msg_queue))
+		{
+			tls_sys_task_del();
+		}
+		else
+		{
+			tls_os_sem_release(sys_task_sem);
+		}
     }
 }
 
@@ -408,15 +437,31 @@ void tls_sys_task(void *data)
 
 void tls_sys_send_msg(u32 msg, void *data)
 {
-    struct tls_sys_msg *pmsg;
+    struct tls_sys_msg *pmsg = NULL;
+	tls_os_status_t os_status = TLS_OS_ERROR;
 
     pmsg = tls_mem_alloc(sizeof(struct tls_sys_msg));
     if (NULL != pmsg)
     {
-        memset(pmsg, 0, sizeof(struct tls_sys_msg));
-        pmsg->msg = msg;
-        pmsg->data = data;
-        tls_os_queue_send(msg_queue, pmsg, 0);
+		tls_os_sem_acquire(sys_task_sem, 0);
+	    if (0 == tls_sys_task_init())
+	    {
+	        memset(pmsg, 0, sizeof(struct tls_sys_msg));
+	        pmsg->msg = msg;
+	        pmsg->data = data;
+	        os_status = tls_os_queue_send(msg_queue, pmsg, 0);
+			if (os_status != TLS_OS_SUCCESS)
+			{
+				tls_mem_free(pmsg);
+				pmsg = NULL;
+			}
+	    }
+		else
+		{
+			tls_mem_free(pmsg);
+			pmsg = NULL;
+		}
+		tls_os_sem_release(sys_task_sem);
     }
 
     return ;
@@ -506,7 +551,7 @@ static void sys_net_status_changed(u8 status)
 
 #if TLS_CONFIG_TLS_DEBUG
             ethif = tls_netif_get_ethif();
-            TLS_DBGPRT_INFO("net up ==> ip = %v\n", ethif->ip_addr.addr);
+            TLS_DBGPRT_INFO("net up ==> ip = %x\n", ethif->ip_addr.addr);
 #endif
 #if TLS_CONFIG_AP
             tls_param_get(TLS_PARAM_ID_WPROTOCOL, (void*) &wireless_protocol,
@@ -553,25 +598,76 @@ static void sys_net_status_changed(u8 status)
 
 int tls_sys_init()
 {
-    int err;
-
-    /* create messge queue */
+	int err;
+/* create messge queue */
 #define SYS_MSG_SIZE     20
 
-    err = tls_os_queue_create(&msg_queue, SYS_MSG_SIZE);
-    if (err)
-    {
-        return  - 1;
-    }
-
-    /* create task */
-    tls_os_task_create(NULL, "Sys Task", tls_sys_task, (void*)0, (void*)
-        &sys_task_stk,               /* task's stack start address */
-    SYS_TASK_STK_SIZE *sizeof(u32),  /* task's stack size, unit:byte */
-    TLS_SYS_TASK_PRIO, 0);
-
-    tls_netif_add_status_event(sys_net_status_changed);
+	err = tls_os_queue_create(&msg_queue, SYS_MSG_SIZE);
+	if (err)
+	{
+		return	- 1;
+	}
+	err = tls_os_sem_create(&sys_task_sem, 1);
+	if (err)
+	{
+		tls_os_queue_delete(msg_queue);
+		return -2;
+	}
+	tls_netif_add_status_event(sys_net_status_changed);
 
     return 0;
+}
+
+static void tls_sys_task_free(void)
+{
+	if (sys_task_stk)
+	{
+		tls_mem_free(sys_task_stk);
+		sys_task_stk = NULL;
+		tls_os_sem_release(sys_task_sem);		
+	}
+}
+void tls_sys_task_del(void)
+{
+	if (sys_task_hdl)
+	{
+		tls_os_task_del_by_task_handle(sys_task_hdl,tls_sys_task_free);
+	}
+}
+
+int tls_sys_task_init(void)
+{
+	int err;
+
+	if ((sys_task_stk == NULL) && sys_task_sem && msg_queue)
+	{
+		sys_task_stk = (u32 *)tls_mem_alloc(SYS_TASK_STK_SIZE *sizeof(u32));
+		if (sys_task_stk)
+		{
+			/* create task */
+		   err =  tls_os_task_create(&sys_task_hdl, "Sys Task", \
+				tls_sys_task, (void*)0, \
+				(void *)sys_task_stk,				/* task's stack start address */
+				SYS_TASK_STK_SIZE *sizeof(u32),  /* task's stack size, unit:byte */
+				TLS_SYS_TASK_PRIO, 0);
+			if (err != TLS_OS_SUCCESS)
+			{
+				tls_mem_free(sys_task_stk);
+				sys_task_stk = NULL;
+				return -2;
+			}
+		}
+		else
+		{
+			return -3;
+		}
+
+		return 0;
+	}
+	else
+	{
+		return 0;
+	}
+
 }
 

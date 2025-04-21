@@ -21,10 +21,17 @@
 #include "wm_mem.h"
 #include "utils.h"
 #include "wm_flash_map.h"
+#include "wm_crypto_hard.h"
 
+#define USE_TWO_RAM_FOR_PARAMETER  0
 static struct tls_param_flash flash_param;
+#if USE_TWO_RAM_FOR_PARAMETER
 static struct tls_sys_param sram_param;
-struct tls_sys_param user_default_param;
+#endif
+
+struct tls_sys_param *user_default_param = NULL;
+struct tls_sys_param * tls_param_user_param_init(void);
+
 static tls_os_sem_t *sys_param_lock = NULL;
 static const u8 factory_default_hardware[8] = {'H', 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 u8 updp_mode;//upadate default parameters mode, 0:not updating or up finish; 1:updating
@@ -59,12 +66,16 @@ static int param_flash_verify(u32 data_addr, u8 *data_buffer, u32 len)
 static int param_to_flash(int id, int modify_count, int partition_num)
 {
 	int err;
+#if USE_TWO_RAM_FOR_PARAMETER	
 	struct tls_sys_param *src;
 	struct tls_sys_param *dest;
+#endif	
 
 	if ((id < TLS_PARAM_ID_ALL) || (id >= TLS_PARAM_ID_MAX)) {return TLS_PARAM_STATUS_EINVALID;}
 
 	err = TLS_PARAM_STATUS_OK;
+
+#if USE_TWO_RAM_FOR_PARAMETER
 	src = &sram_param;
 	dest = &flash_param.parameters;
 
@@ -150,6 +161,7 @@ static int param_to_flash(int id, int modify_count, int partition_num)
 
 		case TLS_PARAM_ID_AUTO_TRIGGER_PERIOD:
 			dest->transparent_trigger_period = src->transparent_trigger_period;
+            break;
 
 		case TLS_PARAM_ID_DEBUG_MODE:
 			dest->debug_mode = src->debug_mode;
@@ -312,7 +324,7 @@ static int param_to_flash(int id, int modify_count, int partition_num)
 			err = TLS_PARAM_STATUS_EINVALIDID;
 			goto exit;
 	}
-
+#endif
 	flash_param.magic = TLS_PARAM_MAGIC;
 	flash_param.length = sizeof(flash_param);
 
@@ -372,6 +384,10 @@ int tls_param_init(void)
 	int err;
 	signed short i;
 	u16 tryrestore = 0;
+	u32 crckey = 0xFFFFFFFF;
+	psCrcContext_t ctx;
+	u32 crcvalue = 0;
+	
 	struct tls_param_flash *flash;
 
 	if(flash_param.magic == TLS_PARAM_MAGIC)
@@ -394,7 +410,9 @@ int tls_param_init(void)
 	is_damage[0] = is_damage[1] = FALSE;
 	flash = NULL;
 	memset(&flash_param, 0, sizeof(flash_param));
+#if USE_TWO_RAM_FOR_PARAMETER	
 	memset(&sram_param, 0, sizeof(sram_param));
+#endif
 	tryrestore = 0;
 	do
 	{
@@ -412,18 +430,27 @@ int tls_param_init(void)
 			TLS_DBGPRT_INFO("read parameter partition - %d.\n", i);
 			tls_fls_read((i == 0) ? TLS_FLASH_PARAM1_ADDR : TLS_FLASH_PARAM2_ADDR, (u8 *)flash, sizeof(*flash));
 			TLS_DBGPRT_INFO("patition %d magic - 0x%x, crc -0x%x .\n", i, flash->magic, flash->crc32);
+
+			if (flash->magic == TLS_PARAM_MAGIC)
+			{
+				crckey = 0xFFFFFFFF;
+				tls_crypto_crc_init(&ctx, crckey, CRYPTO_CRC_TYPE_32, 3);
+				tls_crypto_crc_update(&ctx, (u8 *)flash, flash->length - 4);
+				tls_crypto_crc_final(&ctx, &crcvalue);
+			}
+
 			if (flash->magic != TLS_PARAM_MAGIC)
 			{
 				TLS_DBGPRT_WARNING("parameter partition - %d has been damaged.\n", i);
 				is_damage[i] = TRUE;
 				damaged++;
-				//continue;
+				continue;
 			}
-			else if (get_crc32((u8 *)flash, flash->length - 4) != *(u32*)((u8*)flash + flash->length - 4))
+			else if ((~crcvalue) != *(u32*)((u8*)flash + flash->length - 4))
 			{
 				is_damage[i] = TRUE;
 				damaged++;
-				//continue;
+				continue;
 			}
 			else
 			{
@@ -435,10 +462,14 @@ int tls_param_init(void)
 					TLS_DBGPRT_INFO("update the parameter in sram using partition - %d,%d,%d.\n", i, flash->length,sizeof(*flash));
 					if (flash->length != sizeof(*flash)){
 						MEMCPY(&flash_param, flash, (flash->length-4));
+#if USE_TWO_RAM_FOR_PARAMETER						
 						MEMCPY(&sram_param, &flash_param.parameters, sizeof(sram_param));
+#endif
 					}else{
 						MEMCPY(&flash_param, flash, sizeof(*flash));
+#if USE_TWO_RAM_FOR_PARAMETER						
 						MEMCPY(&sram_param, &flash_param.parameters, sizeof(sram_param));
+#endif
 					}
 				}
 				memset(flash, 0, sizeof(*flash));
@@ -450,7 +481,9 @@ int tls_param_init(void)
 				damaged= 0;
 				is_damage[0] = is_damage[1] = FALSE;
 				memset(&flash_param, 0, sizeof(flash_param));
+#if USE_TWO_RAM_FOR_PARAMETER				
 				memset(&sram_param, 0, sizeof(sram_param));
+#endif
 				tls_fls_erase(TLS_FLASH_PARAM_RESTORE_ADDR / INSIDE_FLS_SECTOR_SIZE);
 				tryrestore = 1;
 				i = -1;
@@ -561,7 +594,11 @@ int tls_param_load_user(struct tls_sys_param *param)
 **********************************************************************************************************/
 void tls_param_load_factory_default(void)
 {
+#if USE_TWO_RAM_FOR_PARAMETER
 	struct tls_sys_param *param = &sram_param;
+#else
+	struct tls_sys_param *param = &flash_param.parameters;
+#endif
 
 	if (param == NULL) {return;}
 
@@ -630,7 +667,7 @@ void tls_param_load_factory_default(void)
 		param->ipcfg.dns2[3] = 1;
 
 	strcpy((char *)param->local_dnsname, "local.winnermicro");
-	strcpy((char *)param->local_device_name, "tln13sp01");
+	strcpy((char *)param->local_device_name, "w800");
 
 	param->remote_socket_cfg.protocol = TLS_PARAM_SOCKET_TCP;
 	param->remote_socket_cfg.client_or_server = TLS_PARAM_SOCKET_SERVER;
@@ -695,11 +732,21 @@ void tls_param_load_factory_default(void)
 int tls_param_set(int id, void *argv, bool to_flash)
 {
 	int err = 0;
+#if USE_TWO_RAM_FOR_PARAMETER	
 	struct tls_sys_param *param = &sram_param;
+#else
+	struct tls_sys_param *param = &flash_param.parameters;
+#endif
 	if ((id < TLS_PARAM_ID_ALL) || (id >= TLS_PARAM_ID_MAX) || (argv == NULL)) {return TLS_PARAM_STATUS_EINVALID;}
 
 	if(updp_mode)
-		param = &user_default_param;
+	{
+		param = tls_param_user_param_init();
+		if (NULL == param)
+		{
+			return TLS_PARAM_STATUS_EMEM;
+		}
+	}
 	tls_os_sem_acquire(sys_param_lock, 0);
 
 	err = TLS_PARAM_STATUS_OK;
@@ -961,6 +1008,54 @@ exit:
 
 	return err;
 }
+/**********************************************************************************************************
+* Description: 	This function is used to get bt param address offset in system param area.
+*
+* Arguments  : 	id		param id,from TLS_PARAM_ID_BT_REMOTE_DEVICE_1 to TLS_PARAM_ID_BT_REMOTE_DEVICE_5
+*				from_flash	whether the parameter is readed from flash,1 read from flash(invalid for now), 0 read from ram
+
+* Returns    :		address offset(>0) in system param area	success
+*				-1	invalid param
+**********************************************************************************************************/
+
+int tls_param_get_bt_param_address(int id, int from_flash)
+{
+    int addr_offset = 0;
+	struct tls_sys_param *src = NULL;
+
+	if ((id < TLS_PARAM_ID_ALL) || (id >= TLS_PARAM_ID_MAX)) {return TLS_PARAM_STATUS_EINVALID;}  
+
+    if(from_flash)
+    {
+        /*!!unsupport for now!!*/
+        return -1;
+    }
+
+    src = &flash_param.parameters;
+    tls_os_sem_acquire(sys_param_lock, 0);
+    switch (id) {
+
+	case TLS_PARAM_ID_BT_REMOTE_DEVICE_1:
+        addr_offset = (int)&src->remote_device1;
+		break;
+	case TLS_PARAM_ID_BT_REMOTE_DEVICE_2:
+		addr_offset = (int)&src->remote_device2;
+		break;
+	case TLS_PARAM_ID_BT_REMOTE_DEVICE_3:
+		addr_offset = (int)&src->remote_device3;
+		break;
+	case TLS_PARAM_ID_BT_REMOTE_DEVICE_4:
+		addr_offset = (int)&src->remote_device4;
+		break;
+	case TLS_PARAM_ID_BT_REMOTE_DEVICE_5:
+		addr_offset = (int)&src->remote_device5;
+		break;
+    }
+    
+    tls_os_sem_release(sys_param_lock);
+
+    return addr_offset;
+}
 
 /**********************************************************************************************************
 * Description: 	This function is used to get system parameter.
@@ -975,13 +1070,33 @@ exit:
 int tls_param_get(int id, void *argv, bool from_flash)
 {
 	int err;
-	struct tls_sys_param *src;
+	struct tls_sys_param *src = NULL;
 
 	if ((id < TLS_PARAM_ID_ALL) || (id >= TLS_PARAM_ID_MAX)) {return TLS_PARAM_STATUS_EINVALID;}
 
 	err = TLS_PARAM_STATUS_OK;
+#if USE_TWO_RAM_FOR_PARAMETER	
 	if (from_flash) {src = &flash_param.parameters;}
 	else {src = &sram_param;}
+#else
+	struct tls_param_flash *curflashparm = NULL;
+	if (from_flash)
+	{
+		curflashparm = tls_mem_alloc(sizeof(struct tls_param_flash));
+		if (curflashparm)
+		{
+			if (TLS_FLS_STATUS_OK == tls_fls_read((flash_param.partition_num == 0) ? TLS_FLASH_PARAM1_ADDR : TLS_FLASH_PARAM2_ADDR, (u8 *)curflashparm, sizeof(struct tls_param_flash)))
+			{
+				src = &curflashparm->parameters;
+			}
+		}
+	}
+
+	if (NULL == src)
+	{
+		src = &flash_param.parameters;
+	}
+#endif
 
 	tls_os_sem_acquire(sys_param_lock, 0);
 
@@ -1231,6 +1346,13 @@ int tls_param_get(int id, void *argv, bool from_flash)
 			err = TLS_PARAM_STATUS_EINVALIDID;
 			break;
 	}
+#if USE_TWO_RAM_FOR_PARAMETER
+#else
+	if (curflashparm)
+	{
+		tls_mem_free(curflashparm);
+	}
+#endif
 
 	tls_os_sem_release(sys_param_lock);
 
@@ -1250,8 +1372,8 @@ int tls_param_to_flash(int id)
 {
 	int err = 0;
 
-
 	tls_os_sem_acquire(sys_param_lock, 0);
+#if USE_TWO_RAM_FOR_PARAMETER
 	if (TLS_PARAM_ID_ALL == id)
 	{
 		if (0 == memcmp(&sram_param, &flash_param.parameters,sizeof(sram_param)))
@@ -1260,9 +1382,33 @@ int tls_param_to_flash(int id)
 			return TLS_FLS_STATUS_OK;
 		}
 	}
+	err = param_to_flash(id, -1, -1);	
+#else
+	if (TLS_PARAM_ID_ALL == id)
+	{
+		struct tls_param_flash *sram_param;
+		sram_param = tls_mem_alloc(sizeof(struct tls_param_flash));
+		if (sram_param)
+		{
+			if (TLS_FLS_STATUS_OK != tls_fls_read((flash_param.partition_num == 0) ? TLS_FLASH_PARAM1_ADDR : TLS_FLASH_PARAM2_ADDR, (u8 *)sram_param, sizeof(struct tls_param_flash)))
+			{
+				/*write anyway!!!*/
+			}
+			else
+			{	/*if not same, write to flash*/
+				if (0 == memcmp(&sram_param->parameters, &flash_param.parameters,sizeof(struct tls_sys_param)))
+				{
+					tls_mem_free(sram_param);
+					tls_os_sem_release(sys_param_lock);
+					return TLS_FLS_STATUS_OK;
+				}
+			}
+			tls_mem_free(sram_param);
+		}
+	}
 
 	err = param_to_flash(id, -1, -1);
-
+#endif
 	tls_os_sem_release(sys_param_lock);
 
 	return err;
@@ -1291,6 +1437,18 @@ int tls_param_to_default(void)
 	return err;
 }
 
+struct tls_sys_param * tls_param_user_param_init(void)
+{
+	if (NULL == user_default_param)
+	{
+		user_default_param = tls_mem_alloc(sizeof(*user_default_param));
+		if (user_default_param)
+		memset(user_default_param, 0, sizeof(*user_default_param));
+	}
+
+	return user_default_param;
+}
+
 /**********************************************************************************************************
 * Description: 	This function is used to modify user default parameters,then write to flash.
 *
@@ -1300,8 +1458,13 @@ int tls_param_to_default(void)
 **********************************************************************************************************/
 int tls_param_save_user(struct tls_user_param *user_param)
 {
-	struct tls_sys_param *param = &user_default_param;
+	struct tls_sys_param *param = NULL;
 
+	param = tls_param_user_param_init();
+	if (NULL == param)
+	{
+		return TLS_PARAM_STATUS_EMEM;
+	}
 
 	param->wireless_protocol = user_param->wireless_protocol;
 	param->auto_mode = user_param->auto_mode;
@@ -1340,7 +1503,7 @@ int tls_param_save_user(struct tls_user_param *user_param)
 	param->uart_cfg.parity = TLS_PARAM_UART_PARITY_NONE;
 
 	strcpy((char *)param->local_dnsname, "local.winnermicro");
-	strcpy((char *)param->local_device_name, "tln13sp01");
+	strcpy((char *)param->local_device_name, "w800");
 
 	param->EscapeChar = 0x2b;
 	param->EscapePeriod = 200;
@@ -1362,15 +1525,21 @@ int tls_param_save_user(struct tls_user_param *user_param)
 int tls_param_save_user_default(void)
 {
 	u32 magic, crc32, offset;
+	if (NULL == user_default_param)
+	{
+		return TLS_PARAM_STATUS_EMEM;
+	}
+
 	offset = TLS_FLASH_PARAM_DEFAULT;
 	magic = TLS_USER_MAGIC;
 	TLS_DBGPRT_INFO("=====>\n");
 	tls_fls_write(offset, (u8 *)&magic, 4);
 	offset += 4;
-	tls_fls_write(offset, (u8 *)&user_default_param, sizeof(struct tls_sys_param));
+	tls_fls_write(offset, (u8 *)user_default_param, sizeof(struct tls_sys_param));
 	offset += sizeof(struct tls_sys_param);
-	crc32 = get_crc32((u8 *)&user_default_param, sizeof(struct tls_sys_param));
+	crc32 = get_crc32((u8 *)user_default_param, sizeof(struct tls_sys_param));
 	tls_fls_write(offset, (u8 *)&crc32, 4);
+
 	return TLS_PARAM_STATUS_OK;
 }
 

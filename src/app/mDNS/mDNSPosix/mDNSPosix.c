@@ -133,13 +133,7 @@
 #include "mDNSClientAPI.h"           // Defines the interface provided to the client layer above
 #include "mDNSPlatformFunctions.h"   // Defines the interface to the supporting layer below
 #include "mDNSPosix.h"				 // Defines the specific types needed to run mDNS on this platform
-#ifdef WM_W600
-#ifndef assert
-#define assert(n)
-#endif
-#else
 #include <assert.h>
-#endif
 //#include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -155,6 +149,7 @@
 #include "APSCommonServices.h"
 #include "lwip/sockets.h"
 #include "wm_sockets.h"
+#include "wm_netif.h"
 #include "lwip/inet.h"
 #include "lwip/igmp.h"
 #include <time.h>                   // platform support for UTC time

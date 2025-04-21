@@ -16,6 +16,7 @@
 #include "wm_cmdp_hostif.h"
 #endif
 #include "wm_debug.h"
+#include "wm_hspi.h"
 #include "list.h"
 #include "wm_mem.h"
 #include "wm_regs.h"
@@ -41,6 +42,10 @@
 #include "wm_wifi_oneshot.h"
 #include "wm_internal_flash.h"
 #include "wm_cmdp.h"
+#include "wm_bt_config.h"
+#include "wm_bt_api.h"
+#include "wm_uart_task.h"
+#include "wm_bt_def.h"
 
 const u8 SysCreatedDate[] = __DATE__;
 const u8 SysCreatedTime[] = __TIME__;
@@ -49,29 +54,6 @@ const u8 SysCreatedTime[] = __TIME__;
 #include "wm_osal.h"
 #include "wm_uart.h"
 #include "wm_sockets.h"
-
-#if TLS_CONFIG_BT
-#include "wm_bt.h"
-#include "wm_ble.h"
-#include "wm_ble_gatt.h"
-extern tls_bt_status_t enable_bt_test_mode();
-extern tls_bt_status_t exit_bt_test_mode();
-extern u32 bt_enable_adv(void);
-extern u32 bt_disable_adv(void);
-extern tls_bt_status_t at_bt_enable_host(tls_bt_log_level_t log_level, tls_bt_host_callback_t at_callback_ptr);
-extern tls_bt_status_t at_bt_destroy_host(void);
-extern tls_bt_status_t at_bt_cleanup_host(void);
-extern tls_bt_status_t at_bt_enable(int uart_no, tls_bt_log_level_t log_level, tls_bt_host_callback_t at_callback_ptr);
-extern tls_bt_status_t at_bt_destroy(void);
-extern tls_bt_status_t wm_ble_register_scan_result(tls_ble_scan_res_notify_t scan_result_cb);
-extern tls_bt_status_t wm_ble_deregister_scan_result(tls_ble_scan_res_notify_t scan_result_cb);
-extern tls_bt_status_t wm_demo_prof_init(uint16_t uuid, tls_ble_callback_t at_cb_ptr);
-extern tls_bt_status_t wm_demo_prof_deinit(int server_if);
-extern void  hci_dbg_hexstring(const char *msg, const uint8_t *ptr, int a_length);
-extern tls_bt_status_t wm_demo_cli_init(uint16_t uuid, tls_ble_callback_t at_cb_ptr);
-extern tls_bt_status_t wm_demo_cli_deinit(int client_if);
-extern tls_bt_uuid_t * app_uuid16_to_uuid128(uint16_t uuid16);
-#endif
 
 
 extern u32 rf_spi_read(u32 reg);
@@ -101,7 +83,7 @@ extern void tls_set_hspi_fwup_mode(u8 ifenable);
 
 extern void wm_rf_set_channel(u16 chan, int channel_type);
 extern int t_http_fwup(char *url);
-extern u32 adc_temp(void);
+extern int adc_temp(void);
 
 extern void CreateThroughputTask(void);
 
@@ -113,7 +95,11 @@ struct tls_hostif *tls_get_hostif(void)
 
 u8 default_socket = 0;
 #if TLS_CONFIG_CMD_USE_RAW_SOCKET
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR
+struct tls_uart_net_msg *sockrecvmit[TLS_MAX_NETCONN_NUM];
+#else
 struct tls_uart_circ_buf * sockrecvmit[TLS_MAX_NETCONN_NUM];
+#endif
 #else
 #define SOCK_RECV_TIMEOUT    100
 struct tls_uart_circ_buf * sockrecvmit[MEMP_NUM_NETCONN];
@@ -125,7 +111,17 @@ static u32 sock_cmdp_timeouts[MEMP_NUM_NETCONN] = {0};
 #ifndef MIN
    #define MIN(x,y) ((x)<(y)?(x):(y))
 #endif
-
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR
+struct tls_uart_net_msg * tls_hostif_get_recvmit(int socket_num)
+{
+#if TLS_CONFIG_CMD_USE_RAW_SOCKET
+	TLS_DBGPRT_INFO("socket_num=%d, precvmit=0x%x\n", socket_num, (u32)sockrecvmit[socket_num-1]);
+	return sockrecvmit[socket_num-1];
+#else
+	return sockrecvmit[socket_num-LWIP_SOCKET_OFFSET];
+#endif
+}
+#else
 struct tls_uart_circ_buf * tls_hostif_get_recvmit(int socket_num)
 {
 #if TLS_CONFIG_CMD_USE_RAW_SOCKET
@@ -135,6 +131,7 @@ struct tls_uart_circ_buf * tls_hostif_get_recvmit(int socket_num)
 	return sockrecvmit[socket_num-LWIP_SOCKET_OFFSET];
 #endif
 }
+#endif
 
 	
 void tls_hostif_fill_cmdrsp_hdr(struct tls_hostif_cmdrsp *cmdrsp,
@@ -187,7 +184,10 @@ void free_tx_msg_buffer(struct tls_hostif_tx_msg *tx_msg){
             //Tcp and Udp both use the below case.
             case HOSTIF_TX_MSG_TYPE_UDP:
             case HOSTIF_TX_MSG_TYPE_TCP:
-                pbuf_free(tx_msg->u.msg_tcp.p);
+				if (tx_msg->u.msg_tcp.p)
+				{
+                	pbuf_free(tx_msg->u.msg_tcp.p);
+				}
                 break;
 #endif //TLS_CONFIG_SOCKET_RAW
             default:
@@ -243,7 +243,7 @@ int tls_hostif_atcmd_loopback(u8 hostif_type,
     return 0; 
 }
 
-extern struct tls_uart_port uart_port[2];
+extern struct tls_uart_port uart_port[];
 int tls_hostif_process_cmdrsp(u8 hostif_type, char *cmdrsp, u32 cmdrsp_size)
 {
     struct tls_hostif_tx_msg *tx_msg;
@@ -292,7 +292,7 @@ int tls_hostif_process_cmdrsp(u8 hostif_type, char *cmdrsp, u32 cmdrsp_size)
                     if(hostif_type == HOSTIF_MODE_UART0)
                         remain_len = tls_uart_tx_remain_len(&uart_port[0]);
                     else
-                        remain_len = tls_uart_tx_remain_len(&uart_port[1]);
+                        remain_len = tls_uart_tx_remain_len(&uart_port[tls_uart_get_at_cmd_port()]);
                     tls_os_time_delay(2);
                 }
                 hif->uart_send_tx_msg_callback(hostif_type, tx_msg, FALSE);
@@ -311,7 +311,6 @@ int tls_hostif_process_cmdrsp(u8 hostif_type, char *cmdrsp, u32 cmdrsp_size)
 
 int tls_hostif_cmd_handler(u8 hostif_cmd_type, char *buf, u32 length)
 {
-#define CMD_RSP_BUF_SIZE    600//256
     char *cmdrsp_buf;
     u32 cmdrsp_size;
     struct tls_atcmd_token_t *atcmd_tok = NULL;
@@ -322,7 +321,7 @@ int tls_hostif_cmd_handler(u8 hostif_cmd_type, char *buf, u32 length)
 	struct tls_hostif *hif = tls_get_hostif();
 
     //TLS_DBGPRT_INFO("===>\n");
-    cmdrsp_size = CMD_RSP_BUF_SIZE;
+    cmdrsp_size = AT_CMD_RSP_BUF_SIZE;
     atcmd_tok = tls_mem_alloc(sizeof(struct tls_atcmd_token_t));
     if (NULL == atcmd_tok)
         return -1;
@@ -330,7 +329,7 @@ int tls_hostif_cmd_handler(u8 hostif_cmd_type, char *buf, u32 length)
     switch (hostif_cmd_type) {
         case HOSTIF_HSPI_RI_CMD:
         case HOSTIF_UART1_RI_CMD:
-            cmdrsp_buf = tls_mem_alloc(CMD_RSP_BUF_SIZE);
+            cmdrsp_buf = tls_mem_alloc(AT_CMD_RSP_BUF_SIZE);
             if (!cmdrsp_buf)
             {
                 tls_mem_free(atcmd_tok);
@@ -357,7 +356,7 @@ int tls_hostif_cmd_handler(u8 hostif_cmd_type, char *buf, u32 length)
             if (err) {
                 //TODO:
             }
-            cmdrsp_buf = tls_mem_alloc(CMD_RSP_BUF_SIZE);
+            cmdrsp_buf = tls_mem_alloc(AT_CMD_RSP_BUF_SIZE);
             if (!cmdrsp_buf)
             {
                 tls_mem_free(atcmd_tok);
@@ -401,7 +400,7 @@ int tls_hostif_cmd_handler(u8 hostif_cmd_type, char *buf, u32 length)
                     tls_mem_free(atcmd_loopback_buf);
             }
 
-            cmdrsp_buf = tls_mem_alloc(CMD_RSP_BUF_SIZE);
+            cmdrsp_buf = tls_mem_alloc(AT_CMD_RSP_BUF_SIZE);
             if (!cmdrsp_buf)
             {
                 tls_mem_free(atcmd_tok);
@@ -444,11 +443,11 @@ int tls_hostif_cmd_handler(u8 hostif_cmd_type, char *buf, u32 length)
                 name_len = strlen(atcmd_tok->name);
                 for (i = 0; i < name_len; i++)
                     atcmd_tok->name[i] = toupper(atcmd_tok->name[i]);
-                cmdrsp_size = CMD_RSP_BUF_SIZE;
+                cmdrsp_size = AT_CMD_RSP_BUF_SIZE;
 #if TLS_CONFIG_RMMS
                 if (hostif_cmd_type == HOSTIF_RMMS_AT_CMD)
                 {
-                    if (strcmp("WSCAN", atcmd_tok->name) == 0)/* Ŀǰֻ��wscan��һ���첽 */
+                    if (strcmp("WSCAN", atcmd_tok->name) == 0)/* ç®ååªæwscanè¿ä¸ä¸ªå¼æ­?*/
                         memcpy(hif->rmms_addr, buf, 6);
                 }
 #endif
@@ -495,7 +494,7 @@ int tls_hostif_cmd_handler(u8 hostif_cmd_type, char *buf, u32 length)
     {
         if (hostif_cmd_type == HOSTIF_RMMS_AT_CMD)
         {
-            if (strcmp("WSCAN", atcmd_tok->name) != 0)/* Ŀǰֻ��wscan��һ���첽 */
+            if (strcmp("WSCAN", atcmd_tok->name) != 0)/* ç®ååªæwscanè¿ä¸ä¸ªå¼æ­?*/
                 hif->rmms_status = 0;
         }
     }
@@ -526,7 +525,7 @@ int tls_hostif_hdr_check(u8 *buf, u32 length)
         return -1;
 #endif
 
-    //TODO: ����У��Ͳ��Ƚ� 
+    //TODO: è®¡ç®æ ¡éªåå¹¶æ¯è¾ 
     //
 
     return 0;
@@ -946,7 +945,7 @@ int tls_hostif_send_event_scan_cmplt(struct tls_scan_bss_t *scan_res,
                     *p++ = bss_info->ssid_len;
                     MEMCPY(p, bss_info->ssid, bss_info->ssid_len);
                     p += bss_info->ssid_len;
-                    *p++ = (char)(0x100-bss_info->rssi);
+                    *p++ = (signed char)bss_info->rssi;
                     buflen += (11 + bss_info->ssid_len);
                     remain_len = remain_len - (11 + bss_info->ssid_len);
                     bss_info++; 
@@ -988,6 +987,10 @@ int tls_hostif_send_event_scan_cmplt(struct tls_scan_bss_t *scan_res,
             }
 #endif
             for (i = 0; i < scan_res->count; i++) {
+				if (buflen > (2500 - sizeof(struct tls_bss_info_t)))
+				{
+					break;
+				}
                 strlen = sprintf(p, "%02X%02X%02X%02X%02X%02X,%u,%u,%u,\"",
                         bss_info->bssid[0], bss_info->bssid[1], bss_info->bssid[2],
                         bss_info->bssid[3], bss_info->bssid[4], bss_info->bssid[5],
@@ -999,7 +1002,7 @@ int tls_hostif_send_event_scan_cmplt(struct tls_scan_bss_t *scan_res,
                     buflen += strlen;
                     p = buf + buflen;
                 }
-                strlen = sprintf(p, "\",%u\r\n", (char)(0x100-bss_info->rssi));
+                strlen = sprintf(p, "\",%d\r\n", (signed char)bss_info->rssi);
                 buflen += strlen;
                 p = buf + buflen;
                 bss_info++; 
@@ -1037,8 +1040,8 @@ void tls_hostif_tx_timeout(void *ptmr, void *parg)
 
     if (hif->hostif_mode == HOSTIF_MODE_HSPI)
     {
-        if(hif->uart_send_tx_msg_callback != NULL)
-            hif->uart_send_tx_msg_callback(HOSTIF_MODE_HSPI, NULL, FALSE);
+        if(hif->hspi_send_tx_msg_callback != NULL)
+            hif->hspi_send_tx_msg_callback(HOSTIF_MODE_HSPI, NULL, FALSE);
     }
     else if (hif->hostif_mode == HOSTIF_MODE_UART0) {
         if(hif->uart_send_tx_msg_callback != NULL)
@@ -1095,20 +1098,40 @@ void hostif_wscan_cmplt(void)
         }
     } 
 }
-#if TLS_CONFIG_UART
+#if TLS_CONFIG_UART || TLS_CONFIG_HS_SPI
+#define HOSTIF_TASK_USE_DYNAMIC_MALLOC_FTR  1
 #define HOSTIF_TASK_STK_SIZE    800
+#if HOSTIF_TASK_USE_DYNAMIC_MALLOC_FTR
+u32 *hostif_stk;
+#else
 u32 hostif_stk[HOSTIF_TASK_STK_SIZE];
+#endif
 struct task_parameter wl_task_param_hostif = {
 		.mbox_size = 32,
 		.name = "uart spi task",
+
+#if HOSTIF_TASK_USE_DYNAMIC_MALLOC_FTR
+		.stk_size = 0,
+		.stk_start = NULL,
+#else
 		.stk_size = HOSTIF_TASK_STK_SIZE,
 		.stk_start = (u8 *)hostif_stk,
+#endif		
 		.task_id = TLS_HOSTIF_TASK_PRIO,
 		.mbox_id = TLS_MBOX_ID_HOSTIF_TASK,
 		.timeo_id = TLS_TIMEO_ID_HOSTIF_TASK,
 };
 
 int tls_hostif_task_init(void){
+#if HOSTIF_TASK_USE_DYNAMIC_MALLOC_FTR
+	hostif_stk = tls_mem_alloc(HOSTIF_TASK_STK_SIZE *sizeof(u32));
+	if (hostif_stk == NULL)
+	{
+		return -1;
+	}
+	wl_task_param_hostif.stk_size = HOSTIF_TASK_STK_SIZE;
+	wl_task_param_hostif.stk_start = (u8 *)hostif_stk;
+#endif
 	return tls_wl_task_run(&wl_task_param_hostif);
 }
 #endif
@@ -1154,15 +1177,62 @@ int tls_hostif_init(void)
     if (!err)
         tls_os_timer_start(hif->tx_timer); 
 
-#if TLS_CONFIG_UART
+#if TLS_CONFIG_UART || TLS_CONFIG_HS_SPI
     err = tls_hostif_task_init();
 #endif
 
-//    temAtStartUp = adc_temp();
+
     return err; 
 }
 
 #if TLS_CONFIG_SOCKET_RAW || TLS_CONFIG_SOCKET_STD
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR
+static void tls_hostif_set_recvmit(int socket_num, struct tls_uart_net_msg * precvmit)
+{
+#if TLS_CONFIG_CMD_USE_RAW_SOCKET
+	TLS_DBGPRT_INFO("socket_num=%d, precvmit=0x%x\n",socket_num, (u32)precvmit);
+	sockrecvmit[socket_num-1] = precvmit;
+#else
+	sockrecvmit[socket_num-LWIP_SOCKET_OFFSET] = precvmit;
+#endif
+}
+
+static void alloc_recvmit(int socket_num)
+{
+
+	struct tls_uart_net_msg * precvmit = tls_hostif_get_recvmit(socket_num);
+	if(precvmit != NULL)
+		return;
+	precvmit = tls_mem_alloc(sizeof(struct tls_uart_net_msg));
+	if(precvmit == NULL)
+		return;
+
+	dl_list_init(&precvmit->tx_msg_pending_list);
+	tls_hostif_set_recvmit(socket_num, precvmit);
+}
+
+static void free_recvmit(int socket_num)
+{
+	struct tls_uart_net_msg * precvmit = tls_hostif_get_recvmit(socket_num);
+	tls_uart_net_buf_t *net_buf;
+	if(precvmit == NULL)
+	return;
+
+	dl_list_for_each(net_buf,&precvmit->tx_msg_pending_list,struct tls_uart_net_buf,list)
+	{
+		if (net_buf->pbuf)
+		{
+			pbuf_free(net_buf->pbuf);
+			net_buf->buflen = 0;
+			net_buf->offset = 0;
+			net_buf->buf = NULL;
+		}
+	}
+	tls_mem_free(precvmit);
+	precvmit = NULL;
+	tls_hostif_set_recvmit(socket_num, precvmit);
+}
+#else
 static void tls_hostif_set_recvmit(int socket_num, struct tls_uart_circ_buf * precvmit)
 {
 #if TLS_CONFIG_CMD_USE_RAW_SOCKET
@@ -1206,6 +1276,7 @@ static void free_recvmit(int socket_num)
 	precvmit = NULL;
 	tls_hostif_set_recvmit(socket_num, precvmit);
 }
+#endif
 
 int tls_hostif_recv_data(struct tls_hostif_tx_msg *tx_msg) 
 {
@@ -2014,7 +2085,7 @@ static void tls_hostif_wjoin_success(void)
         if ((hif->last_join_cmd_mode == CMD_MODE_HSPI_RICMD) ||
                 (hif->last_join_cmd_mode == CMD_MODE_UART1_RICMD)){ 
             tls_hostif_send_event_wjoin_success(); 
-	 }
+        }
         else if (hif->last_join_cmd_mode == CMD_MODE_UART1_ATCMD) {
 			hif->uart_atcmd_bits |= (1 << UART_ATCMD_BIT_WJOIN);
             tls_os_sem_release(hif->uart_atcmd_sem); 
@@ -2040,7 +2111,7 @@ static void tls_hostif_wjoin_failed(void)
         if ((hif->last_join_cmd_mode == CMD_MODE_HSPI_RICMD) ||
                 (hif->last_join_cmd_mode == CMD_MODE_UART1_RICMD)){
             tls_hostif_send_event_wjoin_failed();
-	 }
+	 	}
         else if (hif->last_join_cmd_mode == CMD_MODE_UART1_ATCMD) {
 			hif->uart_atcmd_bits |= (1 << UART_ATCMD_BIT_WJOIN);
             tls_os_sem_release(hif->uart_atcmd_sem); 
@@ -2062,10 +2133,11 @@ static void tls_hostif_wjoin_failed(void)
 
 static void tls_hostif_net_status_changed(u8 status)
 {
+	struct tls_hostif *hif = tls_get_hostif();
     switch(status)
     {
         case NETIF_WIFI_JOIN_FAILED:
-            if (tls_cmd_get_net_up())/* ����������ټ�������join failed֮��������ʾ���Ͽ������� */
+            if (tls_cmd_get_net_up())/* è§£å³å ç½ååå ç½åºç°join failedä¹åè¿æ¥æ¾ç¤ºä¸æ­å¼çé®é¢?*/
             {
                 tls_cmd_set_net_up(0);
                 tls_hostif_send_event_linkdown(); 
@@ -2093,6 +2165,13 @@ static void tls_hostif_net_status_changed(u8 status)
 #endif
             break;
         case NETIF_WIFI_DISCONNECTED:
+			{
+
+				if (hif->last_join) 
+				{		
+					hif->last_join = 0;
+				}
+			}
         case NETIF_WIFI_SOFTAP_CLOSED:
             tls_cmd_set_net_up(0);
             tls_hostif_send_event_linkdown(); 
@@ -2285,6 +2364,10 @@ sem_acquire:
             err = tls_os_sem_acquire(hif->uart_atcmd_sem, 20 * HZ);
             if (err) 
             {
+				if (hif->last_join)
+				{
+					hif->last_join = 0;
+				}
                 return -CMD_ERR_JOIN; 
             }
             else {
@@ -2317,7 +2400,10 @@ sem_acquire:
         }
         else 
         {
-            return -err;
+        	if (err < 0)
+				return err;
+			else
+	            return -err;
         }
     }
     else
@@ -2341,23 +2427,42 @@ int wleav_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, 
 int wscan_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
     int ret=0;
 	u32 time, offset = 0;
+	u32 expiredtime = 0;
+	int i = 0;
+	
     struct tls_hostif *hif = tls_get_hostif();
+
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_WSCAN);
-    ret = tls_cmd_scan(cmd->wscan.mode);
+    ret = tls_cmd_scan_by_param(cmd->scanparam.mode, cmd->scanparam.chlist, cmd->scanparam.scantimes, cmd->scanparam.switchinterval, cmd->scanparam.scantype);
     if(ret){
         return -ret;
     }
     if(cmd->wscan.mode!=CMD_MODE_HSPI_RICMD && cmd->wscan.mode!=CMD_MODE_UART1_RICMD)
     {
+    	/*calculate timeout value according to channellist scantimes,switchinterval, 
+    	   plus 2second as gap to protect*/
+    	time = 0;
+    	for (i = 0; i < 14; i++)
+    	{
+    		if (cmd->scanparam.chlist & (1<<i))
+    		{
+    			time++;
+    		}
+    	}
+		expiredtime = (time == 0)?14:time;
+		expiredtime *= (cmd->scanparam.scantimes > 0?(cmd->scanparam.scantimes):1);
+		expiredtime *= (cmd->scanparam.switchinterval > 100?(cmd->scanparam.switchinterval):200); 
+		expiredtime += 5*HZ;
+		
         time = tls_os_get_time();
 sem_acquire:
-        ret = tls_os_sem_acquire(hif->uart_atcmd_sem, 5*HZ - offset);
+        ret = tls_os_sem_acquire(hif->uart_atcmd_sem, expiredtime - offset);
         if (ret == TLS_OS_SUCCESS)
         {
 			if(!(hif->uart_atcmd_bits & (1 << UART_ATCMD_BIT_WSCAN)))
 			{
 			    offset = tls_os_get_time() - time;
-			    if (offset < 5*HZ)
+			    if (offset < expiredtime)
 			    {
 			        goto sem_acquire;    
 			    }
@@ -2377,6 +2482,7 @@ sem_acquire:
     
     return ret ? -CMD_ERR_OPS : 0;
 }
+
 
 #if TLS_CONFIG_SOCKET_RAW || TLS_CONFIG_SOCKET_STD
 int lkstt_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
@@ -2466,6 +2572,7 @@ sem_acquire:
             /* waiting for 25 seconds */
             err = tls_os_sem_acquire(hif->uart_atcmd_sem, 25*HZ - offset);
             if (err) {
+                tls_cmd_close_socket(socket_num);
                 return -CMD_ERR_SKT_CONN; 
             } else {
                 if(!(hif->uart_atcmd_bits & (1 << UART_ATCMD_BIT_SKCT)))
@@ -2481,7 +2588,10 @@ sem_acquire:
                 if (state != NETCONN_STATE_NONE)
                     cmdrsp->skct.socket = socket_num;
                 else
+                {
+                    tls_cmd_close_socket(socket_num);
                     return -CMD_ERR_SKT_CONN; 
+                }
             }
         }else
             cmdrsp->skct.socket = socket_num;
@@ -2515,7 +2625,11 @@ int skstt_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, 
             memset(skt_status, 0, buflen);
             ret = tls_cmd_get_socket_status(socket, (u8 *)skt_status, buflen);
             if (ret)
+            {
+                if (skt_status)
+                    tls_mem_free(skt_status);
                 return -CMD_ERR_INV_PARAMS;
+            }
             cmdrsp->skstt.number = skt_status->socket_cnt;
             for (i=0;i<skt_status->socket_cnt;i++) {
                 cmdrsp->skstt.ext[i].status = skt_status->skts_ext[i].status;
@@ -2599,8 +2713,8 @@ int skrcv_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, 
     	if(socket<1 || socket>TLS_MAX_NETCONN_NUM)
     		return -CMD_ERR_INV_PARAMS;
 #endif
-        if (size>1024)
-            size = 1024;
+        if (size > AT_SKRCV_CMD_RECV_MAX_SIZE_PER_TIME)
+            size = AT_SKRCV_CMD_RECV_MAX_SIZE_PER_TIME;
         tls_cmd_get_socket_state(socket, &state, NULL);
         if (state != NETCONN_STATE_CONNECTED) {
             return -CMD_ERR_INV_PARAMS;
@@ -3133,14 +3247,24 @@ int pass_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, u
 }
 
 int oneshot_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
-    int ret = 0; 
+    int ret = 0;
+    uint8_t flag = 0;
+    
     if (set_opt) {
-#if TLS_CONFIG_BT
+#if (WM_BLE_INCLUDED == CFG_ON || WM_NIMBLE_INCLUDED == CFG_ON)
         if(cmd->oneshot.status>4)
 #else
         if(cmd->oneshot.status>3)
 #endif
             return -CMD_ERR_INV_PARAMS;
+
+        /*check oneshot flag, if busy, clear it*/
+        tls_cmd_get_oneshot(&flag);
+        if(flag != 0)
+        {
+            tls_cmd_set_oneshot(0, 0);
+        }
+        
         ret = tls_cmd_set_oneshot(cmd->oneshot.status, update_flash);
     } else {
         ret = tls_cmd_get_oneshot(&cmdrsp->oneshot.status);
@@ -3235,7 +3359,7 @@ int tem_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, un
     }
     else {
         char temperature[8] = {0};
-        u32 temp = adc_temp();
+        int temp = adc_temp();
         s32 offset = 0;
 
 		ret = tls_get_rx_iq_gain((u8 *)&offset);
@@ -3243,7 +3367,13 @@ int tem_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, un
 			temp = temp - offset;
         }
         if (!ret){
-            sprintf(temperature, "%d.%d", temp/1000, (temp%1000)/100);
+			if (temp < 0)
+			{
+				temp = 0- temp;
+	            sprintf(temperature, "-%d.%d", temp/1000, (temp%1000)/100);			
+			}
+			else
+	            sprintf(temperature, "%d.%d", temp/1000, (temp%1000)/100);
             memcpy((char *)cmdrsp->tem.offset, temperature, strlen(temperature));
         }
     }
@@ -3254,7 +3384,15 @@ int tem_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, un
 int qmac_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
     u8 *mac = NULL;
     mac = wpa_supplicant_get_mac();
-    memcpy(cmdrsp->mac.addr, mac, 6);
+	if (mac)
+	{
+    	memcpy(cmdrsp->mac.addr, mac, 6);
+	}
+	else
+	{
+		tls_get_mac_addr(&cmdrsp->mac.addr[0]);
+	}
+
     return 0;
 }
 
@@ -3444,7 +3582,7 @@ int updm_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, u
 		if(1 == cmd->updm.mode)
 		{
 			tls_set_fwup_mode(cmd->updm.mode);
-			tls_cmd_disconnect_network((IEEE80211_MODE_INFRA | IEEE80211_MODE_AP));/*����ʱ�Ͽ�����*/
+			tls_cmd_disconnect_network((IEEE80211_MODE_INFRA | IEEE80211_MODE_AP));/*åçº§æ¶æ­å¼ç½ç»*/
 			if (0 == cmd->updm.src)
 			    tls_fwup_enter(TLS_FWUP_IMAGE_SRC_LUART);
 			else
@@ -3478,6 +3616,9 @@ int updd_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, u
     }
     else if (1 == cmd->updd.data[0])/* ri */
     {
+#if TLS_CONFIG_HS_SPI
+        tls_set_hspi_fwup_mode(1);
+#endif
     }
 
     return err;
@@ -3659,7 +3800,7 @@ int txg_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, un
     if(set_opt){
          memcpy(tx_gain, cmd->txg.tx_gain, TX_GAIN_LEN);
 		TLS_DBGPRT_INFO("save tx gain!\r\n");
-		tls_set_tx_gain(tx_gain);
+		return tls_set_tx_gain(tx_gain);
     }else{
 		MEMCPY(cmdrsp->txg.tx_gain, tx_gain, TX_GAIN_LEN);
     }
@@ -3679,47 +3820,44 @@ int txg_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, un
 * Author: 	
 ******************************************************************/
 int txgi_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
-	u8* tx_gain = ieee80211_get_tx_gain();
+    u8 tx_gain[TX_GAIN_LEN];
+	u8* param_tx_gain = ieee80211_get_tx_gain();
+
+	int ret = 0;
 	int i = 0;
-	int j = 0;
-
-	const unsigned char rf_txgainmap[] = 
+	if(set_opt)
 	{
-		 0x52, 0x54,  0x20, 0x24, 0x26, 0x60, 0x62, 0x64,  0x70, 0x72,0x74,0x76,0x78,0x7A,0x38,0x3A, /*for NC*/
-		 0x10,0x12,0x50,0x52,0x54,0x20,0x24,0x26,0x60,0x62,0x64,0x70,0x72,0x74,0x76,0x78,
-		 0x7A,0x7C,0x7E,0x38,0x3A,
-	};	
-
-    if(set_opt)
-	{
-		for (i = 0;i < 28; i++)
+		extern int tls_tx_gainindex_map2_gainvalue(u8 *dst_txgain, u8 *srcgain_index);
+		tls_tx_gainindex_map2_gainvalue(tx_gain, cmd->txg.tx_gain);
+		for (i = 0; i < TX_GAIN_LEN/3; i++)
 		{
-			if (cmd->txg.tx_gain[i] < 16 || cmd->txg.tx_gain[i] > 36)
+			if (cmd->txg.tx_gain[i] == 0xFF)
 			{
-				return -1;
+				tx_gain[i] = 0xFF;
+				tx_gain[i+TX_GAIN_LEN/3] = 0xFF;
+				tx_gain[i+TX_GAIN_LEN*2/3] = 0xFF;
 			}
-			tx_gain[i] = rf_txgainmap[cmd->txg.tx_gain[i]];
-			tx_gain[i+28] = rf_txgainmap[cmd->txg.tx_gain[i]];
-			tx_gain[i+56] = rf_txgainmap[cmd->txg.tx_gain[i]];						
+			else
+			{
+				param_tx_gain[i] = tx_gain[i];
+				param_tx_gain[i+TX_GAIN_LEN/3] = tx_gain[i];
+				param_tx_gain[i+TX_GAIN_LEN*2/3] = tx_gain[i];
+			}
 		}
-		tls_set_tx_gain(tx_gain);
-    }
+		ret = tls_set_tx_gain(tx_gain);
+	}
 	else
 	{  
-		memset(cmdrsp->txg.tx_gain, 0x10, 28);
-		for (i = 0; i < 28; i++)
+		/*ÃÃ§ÃÂµÂ·Â´ÃÂ³flashÂ²ÃÃÃ½ÃÃ¸ÂµÃÃÂµÂ¼ÃÂ´Ã¦Â´Â¢ÃÃ©Â¿Ã¶*/
+		ret = tls_get_tx_gain(tx_gain);
+		if (ret == 0)
 		{
-			for (j = 16;j <= 36; j++)
-			{
-				if (tx_gain[i] == rf_txgainmap[j])
-				{
-					cmdrsp->txg.tx_gain[i] = j;
-					break;
-				}
-			}
+			extern int tls_tx_gainvalue_map2_gainindex(u8 *dst_txgain_index, u8 *srcgain);
+			memset(cmdrsp->txg.tx_gain, 0xFF, TX_GAIN_LEN/3);
+			ret = tls_tx_gainvalue_map2_gainindex(cmdrsp->txg.tx_gain, tx_gain);
 		}
-    }
-    return 0;
+	}
+	return ret;
 }
 
 
@@ -3729,7 +3867,7 @@ int txg_rate_set_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION
          tx_gain[cmd->txgr.tx_rate] = cmd->txgr.txr_gain[0];
          tx_gain[cmd->txgr.tx_rate+TX_GAIN_LEN/3] = cmd->txgr.txr_gain[1];		 
          tx_gain[cmd->txgr.tx_rate+TX_GAIN_LEN*2/3] = cmd->txgr.txr_gain[2];			 
-	tls_set_tx_gain(tx_gain);
+         return tls_set_tx_gain(tx_gain);
     }
     return 0;
 }
@@ -3752,11 +3890,18 @@ int mac_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, un
    		    return -CMD_ERR_INV_PARAMS;
         }
 		wpa_supplicant_set_mac(cmd->mac.macaddr);
-		tls_set_mac_addr(cmd->mac.macaddr);
+		return tls_set_mac_addr(cmd->mac.macaddr);
     }else{
         u8 *mac = NULL;
         mac = wpa_supplicant_get_mac();
-        memcpy(cmdrsp->mac.addr, mac, 6);
+		if (mac)
+		{
+        	memcpy(cmdrsp->mac.addr, mac, 6);
+		}
+		else
+		{
+			tls_get_mac_addr(&cmdrsp->mac.addr[0]);
+		}
     }
     return 0;
 }
@@ -3821,13 +3966,12 @@ int lpchl_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, 
 /******************************************************************
 * Description:	For litepoint test, start tx process
 
-* Format:		AT+&LPTSTR=<Channel>,<PacketCount>,<PsduLen>,<TxGain>,<DataRate>[,rifs][,greenfield][,gimode]<CR>
+* Format:		AT+&LPTSTR=<temperaturecompensation>,<PacketCount>,<PsduLen>,<TxGain>,<DataRate>[,rifs][,greenfield][,gimode]<CR>
 			+OK<CR><LF><CR><LF>
 		
-* Argument:	hex <Channel>,     not used
-				<PacketCount>, 0��ʾ����
-				<PsduLen>,     ������
-				<TxGain>,      ���棬ֱ��д��Mac bd
+* Argument:	hex <temperaturecompensation>:255-compensation for different temperature;other value-no temperature;
+				<PacketCount>, 0è¡¨ç¤ºé¿å
+				<PsduLen>,     åé¿åº?				<TxGain>,      å¢çï¼ç´æ¥åå°Mac bd
 				<DataRate>,    S2M = 0x0000,	S5M5 = 0x0001,	S11M = 0x0002,	L1M = 0x0003,	L2M = 0x0004,
 	                             L5M5 = 0x0005,	L11M = 0x0006,
 	                             R06M = 0x0100,	R09M = 0x0101,	R12M = 0x0102,	R18M = 0x0103, 	R24M = 0x0104,
@@ -3839,17 +3983,17 @@ int lpchl_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, 
 				  [rifs],        1: mac_txbd->ctrl1 |= (1 << 12)
 				  [greenfield],  1: mac_txbd->ctrl4 |= (1 << 18)
 				  [gimode],      1: mac_txbd->ctrl4 |= (1 << 19)
-				  [timedelay]    �����ʱ�䣬��λ΢�16����
+				  [timedelay]    åé´éæ¶é´ï¼åä½å¾®å¦ï¼?6è¿å¶
 ******************************************************************/
 int lptstr_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
 	
-    TLS_DBGPRT_INFO("Channel = 0x%x, PacketCount = 0x%x, PsduLen = 0x%x, TxGain = 0x%x, DataRate = 0x%x"
+    TLS_DBGPRT_INFO("tempcomp = 0x%x, PacketCount = 0x%x, PsduLen = 0x%x, TxGain = 0x%x, DataRate = 0x%x"
 	    "rifs:0x%x,greenfield:0x%x, gimode:0x%x \r\n",
-            cmd->lptstr.channel, cmd->lptstr.packetcount, cmd->lptstr.psdulen,
+            cmd->lptstr.tempcomp, cmd->lptstr.packetcount, cmd->lptstr.psdulen,
             cmd->lptstr.txgain, cmd->lptstr.datarate, cmd->lptstr.rifs, cmd->lptstr.greenfield, cmd->lptstr.gimode);
 
     atcmd_lpinit();
-    tls_tx_litepoint_test_start(cmd->lptstr.packetcount, cmd->lptstr.psdulen, cmd->lptstr.txgain, cmd->lptstr.datarate, cmd->lptstr.gimode, cmd->lptstr.greenfield, cmd->lptstr.rifs);
+    tls_tx_litepoint_test_start(cmd->lptstr.tempcomp,cmd->lptstr.packetcount, cmd->lptstr.psdulen, cmd->lptstr.txgain, cmd->lptstr.datarate, cmd->lptstr.gimode, cmd->lptstr.greenfield, cmd->lptstr.rifs);
     return 0;
 }
 int tls_lptperiod_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION *cmdrsp)
@@ -3873,6 +4017,7 @@ int tls_lptperiod_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNIO
 ******************************************************************/
 int lptstp_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
     tls_txrx_litepoint_test_stop();	
+    tls_lp_notify_lp_tx_data();
     return 0;
 }
 
@@ -3978,8 +4123,8 @@ int lppstp_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd,
 * Format:		AT+&LPRFPS=< rftype ><size><CR>[data stream] 
 			+OK=<CR><LF><CR><LF>
 			
-* Argument:	ftype��rf���� 0��2230��1��2829��2��HEDrf
-              	data stream �а���36��rf�Ĵ�������28���ŵ��Ĵ���
+* Argument:	ftypeï¼rfç±»å 0ï¼?230ï¼?ï¼?829ï¼?ï¼HEDrf
+              	data stream ä¸­åå?6ä¸ªrfå¯å­å¨ï¼å?8ä¸ªä¿¡éå¯å­å¨
 			
 * Author: 	kevin 2014-03-14
 ******************************************************************/
@@ -3993,8 +4138,8 @@ int lprfps_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd,
 * Format:		AT+&LPCHRS =<channel>,< rxcbw ><CR>
 			+OK<CR><LF><CR><LF>
 			
-* Argument:	channel: �����ŵ��ţ���Ч��Χ1��14
-            		rxcbw: ���ն�Ӧ�ŵ�����0:  20M��1��40M
+* Argument:	channel: æ çº¿ä¿¡éå·ï¼ææèå´1ï½?4
+            		rxcbw: æ¥æ¶å¯¹åºä¿¡éå¸¦å®½0:  20Mï¼?ï¼?0M
 			
 * Author: 	kevin 2014-03-14
 ******************************************************************/
@@ -4008,10 +4153,10 @@ int lpchrs_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd,
 * Format:		AT+&LPTBD =< psdulen >,< txgain >,< datarate >< txcbw >,<gi>,<gf>,< rifs ><CR>
 			+OK<CR><LF><CR><LF>
 			
-* Argument:	psdulen: ���ݳ��ȣ���Ч��Χ14��65535
-			txgain: ��������
-			datarate: ��������
-			txcbw: �������0:20M;1:40M
+* Argument:	psdulen: æ°æ®é¿åº¦ï¼ææèå?4ï½?5535
+			txgain: åå°å¢ç
+			datarate: æ°æ®æ°ç
+			txcbw: åå°å¸¦å®½0:20M;1:40M
 			gi:  0:normal gi;1:short gi
 			gf:  0:no green field;1: green field
 			rifs:  0:no rifs;1:rifs
@@ -4158,6 +4303,11 @@ int tls_freq_error_proc(u8 set_opt, u8 update_flah, union HOSTIF_CMD_PARAMS_UNIO
 	if (set_opt)
 	{
 		ret = tls_freq_err_op((u8 *) &cmd->FreqErr.freqerr, 1);
+		if (0 == ret)
+		{
+			extern void tls_rf_freqerr_adjust(int freqerr);
+			tls_rf_freqerr_adjust(cmd->FreqErr.freqerr);
+		}
 	}else{
 		ret = tls_freq_err_op((u8 *) &cmdrsp->FreqErr.freqerr, 0);
 	}
@@ -4165,21 +4315,27 @@ int tls_freq_error_proc(u8 set_opt, u8 update_flah, union HOSTIF_CMD_PARAMS_UNIO
 	return ret;
 }
 
-int tls_rf_vcg_ctrl_proc(u8 set_opt, u8 update_flah, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+int tls_rf_cal_finish_proc(u8 set_opt, u8 update_flah, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
 {
-	int ret = -1;
-
-	if (set_opt)
+	int ret = 0;
+    if (set_opt)
+    {
+		ret = tls_rf_cal_finish_op((u8 *) &cmd->calfin.val, 1);
+    }
+	else
 	{
-		ret = tls_rf_vcg_ctrl_op((u8 *) &cmd->vcgCtrl.vcg, 1);
-	}else{
-		ret = tls_rf_vcg_ctrl_op((u8 *) &cmdrsp->vcgCtrl.vcg, 0);
+		ret = tls_rf_cal_finish_op((u8 *) &cmdrsp->calfin.val, 0);
+		if (cmdrsp->calfin.val != 1)
+		{
+			cmdrsp->calfin.val = 0;
+		}
 	}
 
 	return ret;
 }
 
 
+#if TLS_CONFIG_WIFI_PERF_TEST
 /******************************************************************
 * Description:	
 As server: TEST UDP & TCP RX
@@ -4199,118 +4355,25 @@ TCP TX: AT+THT=Cc,192.168.1.100, TCP, -l=1024,-t=10,-i=1
 * Argument:	
 			
 ******************************************************************/
-#if TLS_CONFIG_WIFI_PERF_TEST
-void tht_print_param(struct tht_param* tht)
-{
-	TLS_DBGPRT_INFO("THT Parameters: \n");
-	TLS_DBGPRT_INFO("role: %c\n", tht->role);
-	TLS_DBGPRT_INFO("server_hostname: %s\n", tht->server_hostname);
-	TLS_DBGPRT_INFO("protocol: %d\n", tht->protocol);	
-	TLS_DBGPRT_INFO("report_interval: %d\n", tht->report_interval);	
-	TLS_DBGPRT_INFO("duration: %d\n", tht->duration);	
-	TLS_DBGPRT_INFO("rate: %llu\n", tht->rate);	
-	TLS_DBGPRT_INFO("block_size: %d\n", tht->block_size);	
-
-}
-int tht_parse_parameter(struct tht_param* tht, struct tls_atcmd_token_t * tok)
-{
-	char* tmp;
-	int len;
-	
-	switch (*tok->arg[0]){
-		case 'S':
-		case 's':
-			tht->role = 's';
-			#if 0
-			if(strcmp(tok->arg[1], "TCP") == 0){
-				tht->protocol = Ptcp;
-			}
-			else if(strcmp(tok->arg[1], "UDP") == 0){
-				tht->protocol = Pudp;
-			}
-			else{
-				/* return protocol error*/
-				return -1;
-			}
-			
-			if((tmp = strchr(tok->arg[2], '=')) != NULL) {
-				tht->report_interval = atoi(tmp+1);
-			}
-			#endif
-			if((tmp = strchr(tok->arg[1], '=')) != NULL) {
-				tht->report_interval = atoi(tmp+1);
-			}
-
-			tht_print_param(tht);
-		break;
-
-		case 'C':
-		case 'c':
-			tht->role = 'c';
-
-			len = tok->arg[2] - tok->arg[1] - 1	;
-			MEMCPY(tht->server_hostname, tok->arg[1], len);
-			tht->server_hostname[len] = '\0';
-
-			if(strcmp(tok->arg[2], "TCP") == 0){
-				tht->protocol = Ptcp;
-				
-				if((tmp = strchr(tok->arg[3], '=')) != NULL) {
-					tht->block_size = atoi(tmp+1);
-				}
-			}
-			else if(strcmp(tok->arg[2], "UDP") == 0){
-				tht->protocol = Pudp;
-
-				if((tmp = strchr(tok->arg[3], '=')) != NULL) {
-					tmp += 1;
-					tht->rate = unit_atof(tmp);
-				}
-			}
-			else{
-				/* return protocol error*/
-				return -1;
-			}
-
-			if((tmp = strchr(tok->arg[4], '=')) != NULL) {
-				tht->duration = atoi(tmp+1);
-			}
-
-			if((tmp = strchr(tok->arg[5], '=')) != NULL) {
-				tht->report_interval = atoi(tmp+1);
-			}
-
-			tht_print_param(tht);
-		break;
-
-		default:
-			/* print help infor */
-			return -1;
-	}
-
-	return 0;
-	
-
-}
-extern 	tls_os_queue_t *tht_q;
-extern struct tht_param gThtSys;
 int tht_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
 {
+	//extern int tht_start_iperf_test(char *arg[]);
 	int ret = -1;
-	
-	struct tht_param* tht = (struct tht_param*)(&gThtSys);
-
-	CreateThroughputTask();
-
-	memset(tht, 0, sizeof(struct tht_param));
-	/* parse parameter */
-	if(tht_parse_parameter(tht, (struct tls_atcmd_token_t *)cmd->tht.tok) == 0){
-        tls_os_queue_send(tht_q, (void *)TLS_MSG_WIFI_PERF_TEST_START, 0);
-		ret = 0;
-	}else{
-		ret = -CMD_ERR_INV_PARAMS;
-	}
+	//ret = tht_start_iperf_test(((struct tls_atcmd_token_t *)cmd->tht.tok)->arg);
+	//switch(ret)
+	//{
+	//	case 0:
+	//		ret = 0;
+	//	break;
+	//	case -1:
+	//		ret = -CMD_ERR_MEM;	
+	//	break;
+	//	default:
+	//		ret = -CMD_ERR_INV_PARAMS;
+	//	break;
+	//}
 	return ret;
+	
 }
 #endif
 
@@ -4350,21 +4413,21 @@ static int ping_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION 
     {
         ping_test_create_task();
 
-    ret = ping_parse_param(&para, cmd);
-    if (1 == ret)
-    {
-        ping_test_start(&para);
-        ret = 0;
-    }
-    else if(0 == ret)
-    {
-        ping_test_stop();
-        ret = 0;
-    }
-    else
-    {
-        ret = -CMD_ERR_INV_PARAMS;
-    }
+	    ret = ping_parse_param(&para, cmd);
+	    if (1 == ret)
+	    {
+	        ping_test_start(&para);
+	        ret = 0;
+	    }
+	    else if(0 == ret)
+	    {
+	        ping_test_stop();
+	        ret = 0;
+	    }
+	    else
+	    {
+	        ret = -CMD_ERR_INV_PARAMS;
+	    }
     }
     else
     {
@@ -4518,8 +4581,7 @@ s32 tls_uart_bps_set(u8 portNum, u32 bdrate)
 
 	return 0;
 }
-#if TLS_CONFIG_BT
-
+#if (WM_BT_INCLUDED == CFG_ON || WM_BLE_INCLUDED == CFG_ON  || WM_NIMBLE_INCLUDED == CFG_ON)
 tls_bt_status_t bt_wait_rsp_timeout(enum tls_cmd_mode cmd_mode, union HOSTIF_CMD_PARAMS_UNION *cmd, struct tls_hostif *hif, int timeout_s)
 {
 	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
@@ -4546,13 +4608,14 @@ sem_acquire:
 	return ret;
 }
 
+#if (WM_BT_INCLUDED == CFG_ON || WM_BLE_INCLUDED == CFG_ON)
 
 static void bt_evt_cback(tls_bt_host_evt_t evt, tls_bt_host_msg_t *msg)
 {
 #define BLE_EVT_BUF_LEN 1248
 	int ret = -1;
 	int len = 0;
-	char *buf;
+	char *buf = NULL;
 	u8 hostif_type;
 	int passive_response = 0;
 	struct tls_hostif *hif = tls_get_hostif();
@@ -4585,17 +4648,43 @@ static void bt_evt_cback(tls_bt_host_evt_t evt, tls_bt_host_msg_t *msg)
 	switch(evt)
 	{
 		case WM_BT_ADAPTER_STATE_CHG_EVT:
-		len = sprintf(buf, "+OK=0,%hhu\r\n", msg->adapter_state_change.status);
-	    ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
-		if(hif->uart_atcmd_bits & (1<<UART_ATCMD_BIT_ACTIVE_BT_DM))
-		{
-			passive_response =0;
-			hif->uart_atcmd_bits &= ~(1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
-		}else
-		{
-			passive_response =1;
-		}
-		break;
+			len = sprintf(buf, "+OK=0,%hhu\r\n", msg->adapter_state_change.status);
+		    ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+			if(hif->uart_atcmd_bits & (1<<UART_ATCMD_BIT_ACTIVE_BT_DM))
+			{
+				passive_response =0;
+				hif->uart_atcmd_bits &= ~(1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+			}else
+			{
+				passive_response =1;
+			}
+			break;
+	    case WM_BT_ADAPTER_PROP_CHG_EVT:
+
+			if(hif->uart_atcmd_bits & (1<<UART_ATCMD_BIT_ACTIVE_BT_DM_EXT))
+			{
+				if(msg->adapter_prop.status == TLS_BT_STATUS_SUCCESS)
+				{
+					if(msg->adapter_prop.num_properties == 1)
+					{
+						len = sprintf(buf, "+OK=0,");
+						memcpy(buf+len, msg->adapter_prop.properties->val, msg->adapter_prop.properties->len);
+						len += msg->adapter_prop.properties->len;
+					}else
+					{
+						len = sprintf(buf, "+OK=0");
+					}
+				}else
+				{
+					len = sprintf(buf, "+OK=0,%hhu", msg->adapter_prop.status);
+				}
+				buf[len++] = '\r';
+				buf[len++] = '\n';
+				ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+				passive_response =0;
+				hif->uart_atcmd_bits &= ~(1<<UART_ATCMD_BIT_ACTIVE_BT_DM_EXT);
+			}
+			break;
 	default:
 		break;
 		
@@ -4611,80 +4700,38 @@ static void bt_evt_cback(tls_bt_host_evt_t evt, tls_bt_host_msg_t *msg)
 	
 }
 
-int bt_config_host_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret;
-    struct tls_hostif *hif = tls_get_hostif();
-
-    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
-
-    hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
-
-    if (cmd->bt.cmd == 1)
-    {
-    	ret = at_bt_enable_host(TLS_BT_LOG_DEBUG, bt_evt_cback);
-    }
-    else
-    {
-    	ret = at_bt_destroy_host();
-    }
-	
-	if (ret != TLS_BT_STATUS_SUCCESS)
-	{
-		goto end_tag;
-	}
-    
-	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
-	ret = bt_wait_rsp_timeout(cmd->bt.cmd_mode, cmd, hif, 5);
-    if(cmd->bt.cmd == 0)
-    {
-        //cleanup bluedroid, free memory; note, when got adapter off evt, cleanup bluedroid
-    	ret = at_bt_cleanup_host();
-    }
-
-end_tag:
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-
-	
-}
-
-int bt_ctrl_enable_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
-    ret = tls_bt_ctrl_enable(NULL, (tls_bt_log_level_t)cmd->btctrl.level);
-
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-}
-
-int bt_ctrl_destory_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret;
-
-    ret = tls_bt_ctrl_disable();
-
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-}
+#endif
 
 int bt_enable_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
 {
-
     tls_bt_status_t ret;
+#if (WM_BLE_INCLUDED == CFG_ON || WM_BT_INCLUDED == CFG_ON)
     struct tls_hostif *hif = tls_get_hostif();
 
     hif->last_bt_cmd_mode = cmd->btctrl.cmd_mode;
     
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
-    
-	ret = at_bt_enable(cmd->btctrl.type, (tls_bt_log_level_t)cmd->btctrl.level, bt_evt_cback);
+
+
+	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+
+	ret = tls_at_bt_enable(cmd->btctrl.type, (tls_bt_log_level_t)cmd->btctrl.level, bt_evt_cback);
       
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
+		hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_ACTIVE_BT_DM);
 		goto end_tag;
 	}
-	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+	
 	ret = bt_wait_rsp_timeout(cmd->btctrl.cmd_mode, cmd, hif, 5);
-
+    
 end_tag:
+    
+#else
+    ret = tls_at_bt_enable(cmd->btctrl.type, (tls_bt_log_level_t)cmd->btctrl.level);
+#endif 
+
+
 	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;	
 
 }
@@ -4693,20 +4740,25 @@ int bt_destory_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *
 {
     tls_bt_status_t ret;
 	uint8_t flag = 0x00;
+#if (WM_BLE_INCLUDED == CFG_ON)
+	
     struct tls_hostif *hif = tls_get_hostif();
 
     hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
     
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
-    ret = at_bt_destroy();   
+	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+	
+    ret = tls_at_bt_destroy();   
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
+		hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_ACTIVE_BT_DM);
 		goto end_tag;
 	}
-	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+	
 	ret = bt_wait_rsp_timeout(cmd->bt.cmd_mode, cmd, hif, 10);
     //cleanup bluedroid, free memory; note, when got adapter off evt, cleanup bluedroid
-	at_bt_cleanup_host();
+	tls_at_bt_cleanup_host();
 	tls_cmd_get_oneshot(&flag);
 	if(flag == 0x04)
 	{
@@ -4714,13 +4766,24 @@ int bt_destory_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *
 		tls_cmd_set_oneshot(0, 0);
 	}
 end_tag:
+    
+#else
+     ret = tls_at_bt_destroy();
+	tls_cmd_get_oneshot(&flag);
+	if(flag == 0x04)
+	{
+		//clear ble wifi config flag;
+		tls_cmd_set_oneshot(0, 0);
+	}
+
+#endif
+
 	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;	
 }
 
 int bt_ctrl_get_status_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
 {
-    cmdrsp->bt.status = (u8)tls_bt_controller_get_status();
-
+    cmdrsp->bt.status = (u16)tls_bt_controller_get_status();
 	return 0;
 }
 
@@ -4766,17 +4829,9 @@ int bt_tx_power_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION 
     }
     else
     {
-        ret = TLS_BT_STATUS_SUCCESS;//tls_bredr_get_tx_power((int8_t *)&cmdrsp->blepow.min, (int8_t *)&cmdrsp->blepow.max);
+    	tls_bredr_get_tx_power((int8_t *)&cmdrsp->blepow.min, (int8_t *)&cmdrsp->blepow.max);
+        ret = TLS_BT_STATUS_SUCCESS;
     }
-
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-}
-
-int bt_sco_path_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
-
-    ret = tls_bredr_sco_datapath_set((tls_sco_data_path_t)cmd->bt.cmd);
 
 	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
 }
@@ -4784,172 +4839,227 @@ int bt_sco_path_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION 
 int bt_test_mode_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
 {
 	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+    tls_bt_hci_if_t hci_if;
 
     if (cmd->bt.cmd == 1)
     {
-        ret = enable_bt_test_mode();
+        /*default uart1 will be used*/
+        hci_if.uart_index = 1;
+        ret = enable_bt_test_mode(&hci_if);
     }
     else if (cmd->bt.cmd == 0)
     {
         ret = exit_bt_test_mode();
 
     }
-	#if 0
-	else if (cmd->bt.cmd == 2)
-	{
-		extern int llm_get_role(void);
-		extern int llm_get_state(void);
-		printf("get llm_state:%d,role=%d\r\n", llm_get_state(), llm_get_role());
-	}else if (cmd->bt.cmd == 3)
-	{
-		printf("reinit rf\r\n");
-        wm_rf_reinit();
-	}else if(cmd->bt.cmd == 4)
-	{
-		printf("show rf reg\r\n");
-		extern void wm_show_rf_reg(void);
-        wm_show_rf_reg();
-	}else if(cmd->bt.cmd == 5)
-	{
-		wm_ble_client_huawei_init();
-	}else if(cmd->bt.cmd == 6)
-	{
-		extern void GKI_PrintBuffer();
-		GKI_PrintBuffer();	
-	}
-	return 0;
-	#endif
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-}
-
-int ble_adv_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret;
-
-    if (cmd->bt.cmd)
-    {
-        ret = tls_ble_adv(TRUE);
-    }
-    else
-    {
-        ret = tls_ble_adv(FALSE);
-    }
 
 	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
 }
-
-int ble_adv_data_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
-	tls_ble_dm_adv_data_t adv_data;
-	memset(&adv_data, 0, sizeof(adv_data));
-	adv_data.set_scan_rsp = 0;
-	adv_data.include_name = cmd->bleadv.include_name;
-	if(cmd->bleadv.len >0)
-	{
-		adv_data.manufacturer_len = cmd->bleadv.len;
-		memcpy(adv_data.manufacturer_data, cmd->bleadv.data, cmd->bleadv.len);
-	}
-    ret = tls_ble_set_adv_data(&adv_data);
-
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-}
-
-int ble_adv_param_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
-    tls_ble_dm_adv_param_t adv_param;
-	adv_param.adv_int_min = cmd->bleprm.adv_int_min;
-	adv_param.adv_int_max = cmd->bleprm.adv_int_max;
-	adv_param.dir_addr = NULL; //cmd->bleprm.peer_addr;
-    ret = tls_ble_set_adv_param(&adv_param);
-
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-}
-
-int ble_role_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-	return -CMD_ERR_UNSUPP;
-}
-
-
-int ble_scan_param_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-    tls_bt_status_t ret;
-
-    ret = tls_ble_set_scan_param((int)cmd->bleprm.adv_int_min, (int)cmd->bleprm.adv_int_max);
-
-	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
-}
-
-int ble_scan_filter_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
-{
-//TODO: filter ???
-	return 0;
-}
-static u8 get_valid_adv_length_and_name(uint8_t *ptr, uint8_t *pname)
-{
-	u8 ret = 0, seg_len = 0;
-	if(ptr == NULL) return ret;
-	seg_len = ptr[0];
-	while(seg_len != 0)
-	{
-	    if(ptr[ret+1] == 0x09 || ptr[ret+1] == 0x08)
-	    {
-	    	memcpy(pname, ptr+ret+2, seg_len-1);
-			pname[seg_len-1] = 0;
-			asm("nop");asm("nop");asm("nop");asm("nop");
-	    }
-		ret += (seg_len+1); //it self 1 byte;
-		seg_len = ptr[ret];
-		if(ret >=64) break; //sanity check;
-	}
-	
-	return ret;
-}
-void ble_scan_result_report(tls_ble_dm_scan_res_msg_t *msg)
-{
-
-#define BLE_SCAN_RESULT_LEN 256
+int bt_mac_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
     int ret;
-    char *buf;
-    u8 len, valid_len;
-    u8 i;
-    u8 hostif_type;
-	u8 device_name[64] = {0};
-    struct tls_hostif *hif = tls_get_hostif();
-
-    buf = tls_mem_alloc(BLE_SCAN_RESULT_LEN);
-    if (!buf)
-    {
-        return;
-    }
     
-    memset(buf, 0, BLE_SCAN_RESULT_LEN);
-	memset(device_name, 0, sizeof(device_name));
-	asm("nop");asm("nop");asm("nop");asm("nop");asm("nop");
-	valid_len = get_valid_adv_length_and_name(msg->value, device_name);
+    if (set_opt) {
+    	if(cmd->mac.length>12)
+    	{
+   		    return -CMD_ERR_INV_PARAMS;
+        }
+		ret = tls_set_bt_mac_addr(cmd->mac.macaddr);
+    }else{
+        ret = tls_get_bt_mac_addr(cmdrsp->mac.addr);
+    }
+    return ret;
+}
+int bt_name_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp){
 
-	len = sprintf(buf, "%02X%02X%02X%02X%02X%02X,%d,", 
-                  msg->address[0], msg->address[1], msg->address[2],
-                  msg->address[3], msg->address[4], msg->address[5], msg->rssi);
+    int ret = TLS_BT_STATUS_SUCCESS;
+    
+    #if (WM_NIMBLE_INCLUDED == CFG_ON)
+    
+    if (set_opt) {
+		ret = tls_ble_gap_set_name(cmd->btname.name, update_flash);
+    }else{
+        ret = tls_ble_gap_get_name(cmdrsp->btname.name);
+        if(ret > 0)
+        {
+            ret = TLS_BT_STATUS_SUCCESS;
+        }
+    }
+    #else
+	struct tls_hostif *hif = tls_get_hostif();
+    tls_bt_property_t prop;
+	prop.type = WM_BT_PROPERTY_BDNAME;
+	prop.len = cmd->btname.len;     ////name length;
+    prop.val = cmd->btname.name;  ////name value;
+    
 
-	if(device_name[0] != 0x00)
-    {
-    	len += sprintf(buf +len, "\"%s\",", device_name);
+    hif->last_bt_cmd_mode = cmd->btname.cmd_mode;
+    
+	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
+	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM_EXT);
+    if (set_opt) {    
+	    ret = tls_bt_set_adapter_property(&prop, update_flash);
     }else
     {
-    	len += sprintf(buf+len, "\"\",");
+        ret = tls_bt_get_adapter_property(WM_BT_PROPERTY_BDNAME);
     }
+      
+	if (ret != TLS_BT_STATUS_SUCCESS)
+	{
+		hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_ACTIVE_BT_DM_EXT);
+		goto end_tag;
+	}
+	
+	ret = bt_wait_rsp_timeout(cmd->btctrl.cmd_mode, cmd, hif, 5);  
+end_tag:     
+    #endif
     
-    for (i = 0; i < valid_len; i++)
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int bt_rf_mode_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+    tls_rf_bt_mode(cmd->bt.cmd);
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;    
+}
+
+
+#if (WM_BTA_AV_SINK_INCLUDED == CFG_ON)
+
+int bt_audio_sink_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+    if (cmd->bt.cmd == 1)
     {
-        len += sprintf(buf + len, "%02X", msg->value[i]);
+        ret = tls_bt_enable_a2dp_sink();
     }
+    else if (cmd->bt.cmd == 0)
+    {
+        ret = tls_bt_disable_a2dp_sink();
 
-    len += sprintf(buf + len, "\r\n");
-	buf[len++] = '\0';
+    }
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+#endif
 
+#if (WM_BTA_HFP_HSP_INCLUDED == CFG_ON)
+
+int bt_hfp_client_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+    if (cmd->bt.cmd == 1)
+    {
+        ret = tls_bt_enable_hfp_client();
+    }
+    else if (cmd->bt.cmd == 0)
+    {
+        ret = tls_bt_disable_hfp_client();
+
+    }
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+int bt_dial_up_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+	tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+
+    ret = tls_bt_dial_number(cmd->btname.name);
+    
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+#endif
+
+#if (WM_BTA_SPPC_INCLUDED == CFG_ON)
+
+int bt_spp_client_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+    if (cmd->bt.cmd == 1)
+    {
+        ret = tls_bt_enable_spp_client();
+    }
+    else if (cmd->bt.cmd == 0)
+    {
+       ret = tls_bt_disable_spp_client();
+
+    }
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+#endif
+
+#if (WM_BTA_SPPS_INCLUDED == CFG_ON)
+
+int bt_spp_server_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+    if (cmd->bt.cmd == 1)
+    {
+        ret = tls_bt_enable_spp_server();
+    }
+    else if (cmd->bt.cmd == 0)
+    {
+       ret = tls_bt_disable_spp_server();
+
+    }
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+#endif
+
+#if (WM_BT_INCLUDED == CFG_ON)
+
+int bt_scan_mode_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+    ret = demo_bt_scan_mode(cmd->bt.cmd);
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int bt_inquiry_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+	tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+    ret = demo_bt_inquiry(cmd->bt.cmd);
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+#endif
+
+#endif
+
+#if (WM_BLE_INCLUDED == CFG_ON  || WM_NIMBLE_INCLUDED == CFG_ON)
+
+#if (WM_MESH_INCLUDED == CFG_ON )
+
+void ble_mesh_evt_cback(tls_mesh_event_t event, tls_mesh_msg_t *p_data)
+{
+#define RESP_BUF_LEN 256
+
+    int ret = -1;
+    int len = 0;
+    u16 i=0;
+    char *buf;
+    u8 hostif_type;
+    int passive_response = 0;
+    
+    struct tls_hostif *hif = tls_get_hostif();
+    u32 time = tls_os_get_time();
+    u32 hour,min,sec,ms = 0;
+
+    sec = time/HZ;
+    ms = (time%HZ)*2;
+    hour = sec/3600;
+    min = (sec%3600)/60;
+    sec = (sec%3600)%60;
+
+    
 #if TLS_CONFIG_RMMS
     if (hif->last_bt_cmd_mode == CMD_MODE_RMMS_ATCMD)
     {
@@ -4968,18 +5078,1507 @@ void ble_scan_result_report(tls_ble_dm_scan_res_msg_t *msg)
         }
     }
 
-	ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+    buf = tls_mem_alloc(RESP_BUF_LEN);
+    if (!buf)
+    {
+        printf("alloc failed\r\n");
+        return;
+    }
 
-	if (ret)
-	    tls_mem_free(buf);
-	
+    switch(event)
+    {
+       
+        case WM_MESH_UNPROVISION_BEACON_EVT:
+            {
+                tls_mesh_unprov_msg_t *msg = (tls_mesh_unprov_msg_t *)&p_data->unprov_msg;
+   
+                len = sprintf(buf, "+OK=<%d:%02d:%02d.%03d>%02X%02X%02X%02X%02X%02X,", hour,min, sec, ms,
+                              msg->addr[0], msg->addr[1], msg->addr[2],
+                              msg->addr[3], msg->addr[4], msg->addr[5]);
+                for(i = 0; i<16; i++)
+                {
+                    len += sprintf(buf+len, "%02x", msg->uuid[i]);
+                }
+
+                len += sprintf(buf+len, ",%04x\r\n\r\n" , msg->oob_info);
+
+                buf[len++] = 0x00;
+
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response =1;
+            }
+            break;  
+        case WM_MESH_NODE_ADDED_EVT:
+            {
+                tls_mesh_node_added_msg_t *msg = (tls_mesh_node_added_msg_t *)&p_data->node_added_msg;
+
+                len = sprintf(buf, "+OK=%04X,%04X,%02X\r\n\r\n", msg->net_idx, msg->addr, msg->num_elem);
+                
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response = 1;
+
+            }
+            break;  
+        case WM_MESH_OOB_STRING_EVT:
+            {
+                tls_mesh_oob_output_str_msg_t *msg = (tls_mesh_oob_output_str_msg_t *)&p_data->oob_output_string_msg;
+
+                len = sprintf(buf, "+OK=%s\r\n\r\n", msg->str);
+                
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response =1;
+
+            }
+            break;  
+        case WM_MESH_OOB_NUMBER_EVT:
+            {
+                tls_mesh_oob_output_number_msg_t *msg = (tls_mesh_oob_output_number_msg_t *)&p_data->oob_output_number_msg;
+
+                len = sprintf(buf, "+OK=%d\r\n\r\n", msg->number);
+                
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response =1;
+
+            }
+            break; 
+        case WM_MESH_OOB_INPUT_EVT:
+            {
+                tls_mesh_oob_input_msg_t *msg = (tls_mesh_oob_input_msg_t *)&p_data->oob_input_msg;
+
+                len = sprintf(buf, "+OK=%08x\r\n\r\n", msg->act);
+                
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response =1;
+            }
+        case WM_MESH_PROV_CMPLT_EVT: //Node role, was provisioned complete;
+            {
+                tls_mesh_prov_complete_msg_t *msg = (tls_mesh_prov_complete_msg_t *)&p_data->prov_cmplt_msg;
+
+                len = sprintf(buf, "+OK=%04X,0x%04X\r\n\r\n", msg->net_idx, msg->addr);
+                
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response = 1;
+
+            }
+            break;  
+        case WM_MESH_PROV_END_EVT: //Provisioner role, provision process ended;
+            {
+                tls_mesh_prov_end_msg_t *msg = (tls_mesh_prov_end_msg_t *)&p_data->prov_end_msg;
+                len = sprintf(buf, "+OK=%hu,%04X,%04X,%02X\r\n\r\n",(uint8_t)!msg->success, msg->net_idx, msg->addr, msg->num_elem);             
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                if(hif->uart_atcmd_bits & (1<<UART_ATCMD_BIT_ACTIVE_BT))
+                {
+                    passive_response =0;
+                    hif->uart_atcmd_bits &= ~(1<<UART_ATCMD_BIT_ACTIVE_BT);
+                }else
+                {
+                    passive_response =1;
+                }                
+            }
+            break;
+        default:
+            break;
+    }
+   
+    if (ret)
+        tls_mem_free(buf);
+    
+    if(passive_response == 1) {
+        return;
+    }
+    hif->uart_atcmd_bits |= (1 << UART_ATCMD_BIT_BT);
+    tls_os_sem_release(hif->uart_atcmd_sem); 
+    
+}
+int ble_mesh_uart_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
 }
 
+int ble_mesh_erase_cfg_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamnum.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_erase_cfg();
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_read_cfg_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+    tls_mesh_primary_cfg_t primary_cfg;
+
+    hif->last_bt_cmd_mode = cmd->btparamnum.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_get_cfg(&primary_cfg);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_primary_cfg.status = ret;
+    cmdrsp->mesh_primary_cfg.net_transmit_count = primary_cfg.net_transmit_count;
+    cmdrsp->mesh_primary_cfg.net_transmit_intvl = primary_cfg.net_transmit_intvl;
+    cmdrsp->mesh_primary_cfg.relay = primary_cfg.relay;
+    cmdrsp->mesh_primary_cfg.relay_retransmit_count = primary_cfg.relay_retransmit_count;
+    cmdrsp->mesh_primary_cfg.relay_retransmit_intvl = primary_cfg.relay_retransmit_intvl;
+    cmdrsp->mesh_primary_cfg.beacon = primary_cfg.beacon;
+    cmdrsp->mesh_primary_cfg.gatt_proxy = primary_cfg.gatt_proxy;
+    cmdrsp->mesh_primary_cfg.frnd = primary_cfg.frnd;
+    cmdrsp->mesh_primary_cfg.default_ttl = primary_cfg.default_ttl;
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_read_primary_addr_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+    u16_t primary_addr;
+
+    hif->last_bt_cmd_mode = cmd->btparamnum.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_get_primary_addr((u16_t*)&primary_addr);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = primary_addr;
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_change_default_ttl_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamnum.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_change_ttl((u8_t)cmd->btparamnum.param);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_change_primary_addr_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamnum.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_change_primary_addr((u16_t)cmd->btparamnum.param);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_clear_rpl_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_clear_local_rpl();
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_vnd_send_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_gen_set_level_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    s16 state;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamonoffset.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_gen_level_set(cmd->btparamonoffset.net_idx, cmd->btparamonoffset.dst, cmd->btparamonoffset.app_idx, cmd->btparamonoffset.val ,&state);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = state;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}  
+
+int ble_mesh_gen_get_level_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    s16 state;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamonoffget.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_gen_level_get(cmd->btparamonoffget.net_idx, cmd->btparamonoffget.dst, cmd->btparamonoffget.app_idx,&state);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = state;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}    
+
+int ble_mesh_gen_pub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamonoffget.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_gen_off_publish((uint8_t)cmd->bt.cmd);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = ret;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_gen_get_onoff_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 state;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamonoffget.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_gen_onoff_get(cmd->btparamonoffget.net_idx, cmd->btparamonoffget.dst, cmd->btparamonoffget.app_idx,&state);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_resp.status = ret;
+    cmdrsp->mesh_resp.state = state;
+
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_gen_set_onoff_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 state;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamonoffset.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_gen_onoff_set(cmd->btparamonoffset.net_idx, cmd->btparamonoffset.dst, cmd->btparamonoffset.app_idx,cmd->btparamonoffset.val, &state);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_resp.status = ret;
+    cmdrsp->mesh_resp.state = state;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_set_hb_sub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    tls_bt_mesh_cfg_hb_sub hb_sub;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamhbsubset.cmd_mode;
+
+    hb_sub.max = cmd->btparamhbsubset.hb_sub_max;
+    hb_sub.min = cmd->btparamhbsubset.hb_sub_min;
+    hb_sub.count = cmd->btparamhbsubset.hb_sub_count;
+    hb_sub.period = cmd->btparamhbsubset.hb_sub_period;
+    hb_sub.dst = cmd->btparamhbsubset.hb_sub_dst;
+    hb_sub.src = cmd->btparamhbsubset.hb_sub_src;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_hb_sub_set(cmd->btparamhbsubset.net_idx, cmd->btparamhbsubset.net_dst, &hb_sub, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_get_hb_sub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    tls_bt_mesh_cfg_hb_sub hb_sub;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamhbsubset.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_hb_sub_get(cmd->btparamhbsubset.net_idx, cmd->btparamhbsubset.net_dst, &hb_sub, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->mesh_hb_sub.status = status;
+    cmdrsp->mesh_hb_sub.min = hb_sub.min;
+    cmdrsp->mesh_hb_sub.max = hb_sub.max;
+    cmdrsp->mesh_hb_sub.count = hb_sub.count;
+    cmdrsp->mesh_hb_sub.period = hb_sub.period;
+    cmdrsp->mesh_hb_sub.dst = hb_sub.dst;
+    cmdrsp->mesh_hb_sub.src = hb_sub.src;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+
+int ble_mesh_set_hb_pub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    tls_bt_mesh_cfg_hb_pub hb_pub;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamhbpubset.cmd_mode;
+
+    hb_pub.dst = cmd->btparamhbpubset.hb_pub_dst;
+    hb_pub.count = cmd->btparamhbpubset.hb_pub_count;
+    hb_pub.period = cmd->btparamhbpubset.hb_pub_period;
+    hb_pub.ttl = cmd->btparamhbpubset.hb_pub_ttl;
+    hb_pub.feat = cmd->btparamhbpubset.hb_pub_feat;
+    hb_pub.net_idx = cmd->btparamhbpubset.hb_pub_net_idx;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_hb_pub_set(cmd->btparamhbpubset.net_idx, cmd->btparamhbpubset.net_dst, &hb_pub, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_get_hb_pub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    tls_bt_mesh_cfg_hb_pub hb_pub;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamhbpubset.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_hb_pub_get(cmd->btparamhbpubset.net_idx, cmd->btparamhbpubset.net_dst, &hb_pub, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->mesh_hb_pub.status = status;
+    cmdrsp->mesh_hb_pub.net_idx = hb_pub.net_idx;
+    cmdrsp->mesh_hb_pub.feat = hb_pub.feat;
+    cmdrsp->mesh_hb_pub.ttl = hb_pub.ttl;
+    cmdrsp->mesh_hb_pub.period = hb_pub.period;
+    cmdrsp->mesh_hb_pub.count = hb_pub.count;
+    cmdrsp->mesh_hb_pub.dst = hb_pub.dst;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+
+
+int ble_mesh_set_pub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    tls_bt_mesh_cfg_mod_pub pub;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparampubset.cmd_mode;
+
+    pub.addr = cmd->btparampubset.pub_addr;
+    pub.app_idx = cmd->btparampubset.pub_app_idx;
+    pub.cred_flag = cmd->btparampubset.pub_cred_flag;
+    pub.ttl = cmd->btparampubset.pub_ttl;
+    pub.period = cmd->btparampubset.pub_period;
+    pub.transmit = TLS_BT_MESH_PUB_TRANSMIT(cmd->btparampubset.pub_count, cmd->btparampubset.pub_interval);
+
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_pub_set(cmd->btparampubset.net_idx, cmd->btparampubset.dst, cmd->btparampubset.elem_addr, 
+                    cmd->btparampubset.mod_id, cmd->btparampubset.cid, &pub, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_get_pub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    tls_bt_mesh_cfg_mod_pub pub;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamsubadd.cmd_mode;
+
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_pub_get(cmd->btparamsubget.net_idx, cmd->btparamsubget.dst, cmd->btparamsubget.elem_addr, 
+                    cmd->btparamsubget.mod_id, cmd->btparamsubget.cid, &pub, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->mesh_pub.status = status;
+    cmdrsp->mesh_pub.addr = pub.addr;
+    cmdrsp->mesh_pub.app_idx = pub.app_idx;
+    cmdrsp->mesh_pub.cred_flag = pub.cred_flag;
+    cmdrsp->mesh_pub.ttl = pub.ttl;
+    cmdrsp->mesh_pub.period = pub.period;
+    cmdrsp->mesh_pub.transmit = pub.transmit;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_add_sub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamsubadd.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_sub_add(cmd->btparamsubadd.net_idx, cmd->btparamsubadd.dst, cmd->btparamsubadd.elem_addr, 
+                    cmd->btparamsubadd.sub_addr, cmd->btparamsubadd.mod_id, cmd->btparamsubadd.cid, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_del_sub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamsubadd.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_sub_del(cmd->btparamsubadd.net_idx, cmd->btparamsubadd.dst, cmd->btparamsubadd.elem_addr, 
+                    cmd->btparamsubadd.sub_addr,cmd->btparamsubadd.mod_id, cmd->btparamsubadd.cid, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_get_sub_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status;
+    u16 sub[16];
+    u32 i, sub_cnt = 16;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamsubget.cmd_mode;    
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_sub_get(cmd->btparamsubget.net_idx, cmd->btparamsubget.dst, cmd->btparamsubget.elem_addr, 
+                    cmd->btparamsubget.mod_id, cmd->btparamsubget.cid, &status, &sub[0], &sub_cnt);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->mesh_sub.status = status;
+    cmdrsp->mesh_sub.sub_cnt = sub_cnt;
+
+    for(i = 0; i<sub_cnt; i++)
+    {
+        cmdrsp->mesh_sub.subs[i] = sub[i];
+    }
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_get_friend_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 val;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt2param.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_friend_get(cmd->bt2param.param1, cmd->bt2param.param2,&val);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_resp.status = ret;
+    cmdrsp->mesh_resp.state = val;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+    
+int ble_mesh_set_friend_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 val;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamproxy.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_friend_set(cmd->btparamproxy.net_idx, cmd->btparamproxy.dst, cmd->btparamproxy.val, &val);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_resp.status = ret;
+    cmdrsp->mesh_resp.state = val;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_get_proxy_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 proxy;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt2param.cmd_mode;
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_proxy_get(cmd->bt2param.param1, cmd->bt2param.param2,&proxy);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_resp.status = ret;
+    cmdrsp->mesh_resp.state = proxy;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+    
+int ble_mesh_set_proxy_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 proxy;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamproxy.cmd_mode;
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_proxy_set(cmd->btparamproxy.net_idx, cmd->btparamproxy.dst, cmd->btparamproxy.val, &proxy);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->mesh_resp.status = ret;
+    cmdrsp->mesh_resp.state = proxy;
+
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_get_relay_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 relay;
+    u8 transmit;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt2param.cmd_mode;
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_relay_get(cmd->bt2param.param1, cmd->bt2param.param2, &relay, &transmit);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_relay.status = ret;
+    cmdrsp->mesh_relay.state = relay;
+    cmdrsp->mesh_relay.count = TLS_BT_MESH_TRANSMIT_COUNT(transmit);
+    cmdrsp->mesh_relay.interval = TLS_BT_MESH_TRANSMIT_INT(transmit);
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+    
+int ble_mesh_set_relay_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    u8 status= -1;
+    u8 transmit;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamrelay.cmd_mode;   
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_relay_set(cmd->btparamrelay.net_idx, cmd->btparamrelay.dst, cmd->btparamrelay.val, cmd->btparamrelay.count,cmd->btparamrelay.interval, &status, &transmit);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->mesh_relay.status = ret;
+    cmdrsp->mesh_relay.state = cmd->btparamrelay.val;
+    cmdrsp->mesh_relay.count = TLS_BT_MESH_TRANSMIT_COUNT(transmit);
+    cmdrsp->mesh_relay.interval = TLS_BT_MESH_TRANSMIT_INT(transmit);
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_unbind_app_key_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    uint8_t status;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparambak.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON) 
+    ret = tls_ble_mesh_unbind_app_key(cmd->btparambak.net_idx, cmd->btparambak.dst, cmd->btparambak.elem_addr, cmd->btparambak.app_key_idx, cmd->btparambak.mod_id,cmd->btparambak.cid, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_bind_app_key_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    uint8_t status;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparambak.cmd_mode;
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON) 
+    ret = tls_ble_mesh_bind_app_key(cmd->btparambak.net_idx, cmd->btparambak.dst, cmd->btparambak.elem_addr, cmd->btparambak.app_key_idx, cmd->btparambak.mod_id,cmd->btparambak.cid, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_add_app_key_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    uint8_t status;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamark.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_add_app_key(cmd->btparamark.net_idx, cmd->btparamark.addr, cmd->btparamark.key_net_idx, cmd->btparamark.key_app_idx,cmd->btparamark.param, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_add_local_app_key_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamalk.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_add_local_app_key(cmd->btparamalk.net_idx, cmd->btparamalk.app_idx, cmd->btparamalk.param);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->bt.status = ret;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_oob_string_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamstr.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_input_oob_string((const char*)cmd->btparamstr.param);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_oob_number_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btparamnum.cmd_mode;    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_input_oob_number(cmd->btparamnum.param);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_reset_node_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    uint8_t status;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt2param.cmd_mode;
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_node_reset(cmd->bt2param.param1, cmd->bt2param.param2, &status);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+    cmdrsp->bt.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_config_node_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_prov_node_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->btprov.cmd_mode;
+    hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
+    hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT); 
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_provisioner_prov_adv(cmd->btprov.uuid, cmd->btprov.net_idx, cmd->btprov.addr, cmd->btprov.attention);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+ 
+    if(ret != TLS_BT_STATUS_SUCCESS)
+    {
+        hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_ACTIVE_BT);
+        goto end_tag;        
+    }  
+    
+    bt_wait_rsp_timeout(cmd->bt.cmd_mode, cmd, hif, 30);
+
+end_tag:
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_get_comp_data_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    uint8_t status;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt2param.cmd_mode;
+    
+    cmdrsp->comp_data.data_len = sizeof(cmdrsp->comp_data.data);
+
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    ret = tls_ble_mesh_get_comp(cmd->bt2param.param1, cmd->bt2param.param2, &status, cmdrsp->comp_data.data, &cmdrsp->comp_data.data_len);
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    cmdrsp->comp_data.status = status;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_scan_prov_node_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;    
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    switch(cmd->bt.cmd)
+    {
+        case 0:
+            ret = tls_ble_mesh_provisioner_scan(false);
+            break;
+        case 1:
+            ret = tls_ble_mesh_provisioner_scan(true);
+            break;
+    }
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_scan_unprov_node_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;    
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    switch(cmd->bt.cmd)
+    {
+        case 0:
+            ret = tls_ble_mesh_provisioner_scan(false);
+            break;
+        case 1:
+            ret = tls_ble_mesh_provisioner_scan(true);
+            break;
+    }
+#else
+    ret = CMD_ERR_OPS;
+#endif
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_mesh_node_demo_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
+
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    switch(cmd->bt.cmd)
+    {
+        case 0:
+            ret = tls_ble_mesh_node_deinit(0);
+            break;
+        case 1:
+            ret = tls_ble_mesh_node_init();
+            break;
+    }
+ #else
+    ret = CMD_ERR_OPS;
+ #endif
+ 
+    cmdrsp->bt.status = ret;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_node_enable_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
+
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    switch(cmd->bt.cmd)
+    {
+        case 0:
+            ret = tls_ble_mesh_deinit();
+            break;
+        case 1:
+            ret = tls_ble_mesh_init(ble_mesh_evt_cback, MESH_ROLE_NODE, true);
+            break;
+    }
+ #else
+    ret = CMD_ERR_OPS;
+ #endif
+ 
+    cmdrsp->bt.status = ret;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_mesh_provisioner_enable_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
+
+    
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    switch(cmd->bt.cmd)
+    {
+        case 0:
+            ret = tls_ble_mesh_deinit();
+            break;
+        case 1:
+            ret = tls_ble_mesh_init(ble_mesh_evt_cback, MESH_ROLE_PROVISIONER, true);
+            break;
+    }
+ #else
+    ret = CMD_ERR_OPS;
+ #endif
+ 
+    cmdrsp->bt.status = ret;
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+#endif
+
+
+int ble_adv_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+#if (WM_NIMBLE_INCLUDED == CFG_ON)
+    switch(cmd->bt.cmd)
+    {
+        case 0:
+            ret = tls_nimble_gap_adv(/*WM_BLE_ADV_STOP*/0, 0);
+            break;
+        case 1:
+            ret = tls_nimble_gap_adv(/*WM_BLE_ADV_IND*/1, 0);
+            break;
+    }
+ #else
+    ret = tls_ble_gap_adv(cmd->bt.cmd, 0);
+ #endif
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+int ble_demo_adv_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+
+    ret = tls_ble_demo_adv(cmd->bt.cmd);
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_adv_data_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+#if (WM_BLE_INCLUDED == CFG_ON)
+	tls_ble_dm_adv_data_t adv_data;
+	memset(&adv_data, 0, sizeof(adv_data));
+	adv_data.pure_data = true;
+	if(cmd->bleadv.len >0)
+	{
+		adv_data.manufacturer_len = cmd->bleadv.len;
+		memcpy(adv_data.manufacturer_data, cmd->bleadv.data, cmd->bleadv.len);
+	}
+    ret = tls_ble_set_adv_data(&adv_data);
+#else
+	if(cmd->bleadv.len >0)
+	{
+        ret = tls_ble_gap_set_data(WM_BLE_ADV_DATA, cmd->bleadv.data, cmd->bleadv.len);
+	}    
+#endif
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+int ble_scan_rsp_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+#if (WM_BLE_INCLUDED == CFG_ON)
+	tls_ble_dm_adv_data_t adv_data;
+	memset(&adv_data, 0, sizeof(adv_data));
+	adv_data.set_scan_rsp = true;
+	adv_data.pure_data = true;
+	if(cmd->bleadv.len >0)
+	{
+		adv_data.manufacturer_len = cmd->bleadv.len;
+		memcpy(adv_data.manufacturer_data, cmd->bleadv.data, cmd->bleadv.len);
+	}
+    ret = tls_ble_set_adv_data(&adv_data);
+#else
+	if(cmd->bleadv.len >0)
+	{
+        ret = tls_ble_gap_set_data(WM_BLE_ADV_RSP_DATA, cmd->bleadv.data, cmd->bleadv.len);
+	}
+#endif
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_adv_param_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+#if (WM_BLE_INCLUDED == CFG_ON)
+
+    tls_ble_dm_adv_ext_param_t adv_ext_param;
+    adv_ext_param.adv_int_min = cmd->bleprm.adv_int_min;
+    adv_ext_param.adv_int_max = cmd->bleprm.adv_int_max;
+    adv_ext_param.adv_type = cmd->bleprm.adv_type;
+    adv_ext_param.own_addr_type = cmd->bleprm.own_addr_type;
+    adv_ext_param.peer_addr_type = cmd->bleprm.peer_addr_type;
+    adv_ext_param.chnl_map = cmd->bleprm.channel_map;
+    adv_ext_param.afp = cmd->bleprm.adv_filter_policy;
+    if(0 == (cmd->bleprm.peer_addr[0]|cmd->bleprm.peer_addr[1]|cmd->bleprm.peer_addr[2]|cmd->bleprm.peer_addr[3]|cmd->bleprm.peer_addr[4]|cmd->bleprm.peer_addr[5]))
+    {
+        adv_ext_param.dir_addr = NULL; //cmd->bleprm.peer_addr;
+    }else
+    {
+        adv_ext_param.dir_addr = cmd->bleprm.peer_addr;
+    }
+
+    ret = tls_ble_set_adv_ext_param(&adv_ext_param);
+#else
+    ret = tls_ble_gap_set_adv_param(cmd->bleprm.adv_type, cmd->bleprm.adv_int_min, cmd->bleprm.adv_int_max, cmd->bleprm.channel_map, cmd->bleprm.adv_filter_policy, cmd->bleprm.peer_addr, cmd->bleprm.peer_addr_type);
+#endif
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_scan_param_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+#if (WM_BLE_INCLUDED == CFG_ON)
+    ret = tls_ble_set_scan_param((int)cmd->bleprm.adv_int_min, (int)cmd->bleprm.adv_int_max, cmd->bleprm.adv_type);
+#else
+    ret = tls_ble_gap_set_scan_param(cmd->bleprm.adv_int_min, cmd->bleprm.adv_int_max, 0, 0, 1, 0);
+#endif
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_scan_filter_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+//TODO: filter ???
+	return 0;
+}
+
+
+
+#if (WM_BLE_INCLUDED == CFG_ON)
+static u8 get_valid_adv_length_and_name(const uint8_t *ptr, uint8_t *pname)
+{
+	u8 ret = 0, seg_len = 0, min_len = 0;
+    
+	if(ptr == NULL) return ret;
+    
+	seg_len = ptr[0];
+	while(seg_len != 0)
+	{
+	    if(ptr[ret+1] == 0x09 || ptr[ret+1] == 0x08)
+	    {
+	    	min_len = MIN(64, seg_len-1);
+	    	memcpy(pname, ptr+ret+2, min_len);
+			pname[min_len] = 0;
+			asm("nop");asm("nop");asm("nop");asm("nop");
+	    }
+		ret += (seg_len+1); //it self 1 byte;
+		seg_len = ptr[ret];
+		if(ret >=64) break; //sanity check;
+	}
+	
+	return ret;
+}
+
+static void ble_report_evt_cb(tls_ble_dm_evt_t event, tls_ble_dm_msg_t *p_data)
+{
+    if((event != WM_BLE_DM_SCAN_RES_EVT) && (event != WM_BLE_DM_SCAN_RES_CMPL_EVT) && (event != WM_BLE_DM_REPORT_RSSI_EVT)) return;
+    
+#define BLE_SCAN_RESULT_LEN 256
+
+    int ret = -1, index = 0;
+    int len = 0, tmp_len= 0;
+    u16 uuid = 0, i=0;
+    char *buf;
+    u8 hostif_type;
+    int passive_response = 0;
+    
+    struct tls_hostif *hif = tls_get_hostif();
+    u32 time = tls_os_get_time();
+    u32 hour,min,sec,ms = 0;
+
+    sec = time/HZ;
+    ms = (time%HZ)*2;
+    hour = sec/3600;
+    min = (sec%3600)/60;
+    sec = (sec%3600)%60;
+
+    
+#if TLS_CONFIG_RMMS
+    if (hif->last_bt_cmd_mode == CMD_MODE_RMMS_ATCMD)
+    {
+        hostif_type = HOSTIF_MODE_RMMS_AT;
+    }
+    else
+#endif
+    {
+        if (hif->last_bt_cmd_mode == CMD_MODE_UART0_ATCMD)
+        {
+            hostif_type = HOSTIF_MODE_UART0;
+        }
+        else
+        {
+            hostif_type = HOSTIF_MODE_UART1_LS;
+        }
+    }
+
+    buf = tls_mem_alloc(BLE_SCAN_RESULT_LEN);
+    if (!buf)
+    {
+        printf("alloc failed\r\n");
+        return;
+    }
+
+    switch(event)
+    {
+       
+        case WM_BLE_DM_SCAN_RES_EVT:
+            {
+                tls_ble_dm_scan_res_msg_t *msg = (tls_ble_dm_scan_res_msg_t *)&p_data->dm_scan_result;
+
+                u8 valid_len;
+            	u8 device_name[64] = {0};
+                struct tls_hostif *hif = tls_get_hostif();
+                
+                memset(buf, 0, BLE_SCAN_RESULT_LEN);
+            	memset(device_name, 0, sizeof(device_name));
+            	valid_len = get_valid_adv_length_and_name(msg->value, device_name);
+                if(valid_len > 62)
+                {
+                	//printf("###warning(%d)###\r\n", valid_len);
+                	valid_len = 62;
+                }
+            	len = sprintf(buf, "<%d:%02d:%02d.%03d>%02X%02X%02X%02X%02X%02X,%d,", hour,min, sec, ms,
+                              msg->address[0], msg->address[1], msg->address[2],
+                              msg->address[3], msg->address[4], msg->address[5], msg->rssi);
+
+            	if(device_name[0] != 0x00)
+                {
+                	len += sprintf(buf +len, "\"%s\",", device_name);
+                }else
+                {
+                	len += sprintf(buf+len, "\"\",");
+                }
+                
+                for (i = 0; i < valid_len; i++)
+                {
+                    len += sprintf(buf + len, "%02X", msg->value[i]);
+                }
+
+                len += sprintf(buf + len, "\r\n");
+            	buf[len++] = '\0';
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response =1;
+            }
+            break;  
+        case WM_BLE_DM_SCAN_RES_CMPL_EVT:
+            {
+                tls_ble_dm_scan_res_cmpl_msg_t *msg = (tls_ble_dm_scan_res_cmpl_msg_t *)&p_data->dm_scan_result_cmpl;
+                if(hif->uart_atcmd_bits & (1<<UART_ATCMD_BIT_ACTIVE_BT_DM))
+                {
+                    len = sprintf(buf, "+OK=%hhu,%hhu\r\n", 0,msg->num_responses);
+                    ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                    passive_response =0;
+                    hif->uart_atcmd_bits &= ~(1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+                }else
+                {
+                    passive_response =1;
+                }
+            }
+            break;  
+        case WM_BLE_DM_REPORT_RSSI_EVT:
+            {
+                tls_ble_report_rssi_msg_t *msg = (tls_ble_report_rssi_msg_t*)&p_data->dm_scan_result_cmpl;
+                if(hif->uart_atcmd_bits & (1<<UART_ATCMD_BIT_ACTIVE_BT_DM))
+                {
+                    len = sprintf(buf, "+OK=%hhu,%d\r\n", msg->status,msg->rssi);
+                    ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                    passive_response =0;
+                    hif->uart_atcmd_bits &= ~(1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+                }else
+                {
+                    passive_response =1;
+                }
+            }
+            break;            
+        default:
+            break;
+    }
+   
+    if (ret)
+        tls_mem_free(buf);
+    
+    if(passive_response == 1) {
+        return;
+    }
+    hif->uart_atcmd_bits |= (1 << UART_ATCMD_BIT_BT);
+    tls_os_sem_release(hif->uart_atcmd_sem); 
+	
+}
+#else
+
+static void ble_gap_scan_at_callback(int type, int8_t rssi, uint8_t *addr, const uint8_t *name, int name_len, const uint8_t *raw_scan_resp, int raw_scan_resp_length)
+{
+#define BLE_SCAN_RESULT_LEN 256
+    
+    int ret = -1;
+    int len = 0;
+    u16 i=0;
+    char *buf;
+    u8 hostif_type;
+    int passive_response = 0;
+    
+    struct tls_hostif *hif = tls_get_hostif();
+    u32 time = tls_os_get_time();
+    u32 hour,min,sec,ms = 0;
+
+    sec = time/HZ;
+    ms = (time%HZ)*2;
+    hour = sec/3600;
+    min = (sec%3600)/60;
+    sec = (sec%3600)%60;
+    
+        
+#if TLS_CONFIG_RMMS
+    if (hif->last_bt_cmd_mode == CMD_MODE_RMMS_ATCMD)
+    {
+        hostif_type = HOSTIF_MODE_RMMS_AT;
+    }
+    else
+#endif
+    {
+        if (hif->last_bt_cmd_mode == CMD_MODE_UART0_ATCMD)
+        {
+            hostif_type = HOSTIF_MODE_UART0;
+        }
+        else
+        {
+            hostif_type = HOSTIF_MODE_UART1_LS;
+        }
+    }
+
+    buf = tls_mem_alloc(BLE_SCAN_RESULT_LEN);
+    if (!buf)
+    {
+        printf("alloc failed\r\n");
+        return ;
+    }
+
+    switch (type) {
+    case WM_BLE_GAP_EVENT_DISC:
+        {
+            u8 device_name[64] = {0};
+            
+            memset(device_name, 0, sizeof(device_name));
+            if(name_len)
+            {
+                memcpy(device_name, name, MIN(62, name_len));
+            }
+            
+            len = sprintf(buf, "<%d:%02d:%02d.%03d>%02X%02X%02X%02X%02X%02X,%d,", hour,min, sec, ms,
+                          addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], rssi);
+            
+            if(device_name[0] != 0x00)
+            {
+                len += sprintf(buf +len, "\"%s\",", device_name);
+            }else
+            {
+                len += sprintf(buf+len, "\"\",");
+            }
+            
+            for (i = 0; i < raw_scan_resp_length; i++)
+            {
+                len += sprintf(buf + len, "%02X", raw_scan_resp[i]);
+            }
+            
+            len += sprintf(buf + len, "\r\n");
+            buf[len++] = '\0';
+            ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+            passive_response =1;
+
+            break;
+        }
+    case WM_BLE_GAP_EVENT_DISC_COMPLETE:
+        {
+            if(hif->uart_atcmd_bits & (1<<UART_ATCMD_BIT_ACTIVE_BT_DM))
+            {
+                len = sprintf(buf, "+OK=%hhu,\r\n",0);
+                ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);
+                passive_response =0;
+                hif->uart_atcmd_bits &= ~(1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+            }else
+            {
+                passive_response =1;
+            }            
+        }
+        break;
+    default:
+        break;
+    }
+
+    if (ret)
+        tls_mem_free(buf);
+    
+    if(passive_response == 1) {
+        return;
+    }
+    hif->uart_atcmd_bits |= (1 << UART_ATCMD_BIT_BT);
+    tls_os_sem_release(hif->uart_atcmd_sem); 
+
+    return ;
+
+}
+
+static void ble_uart_server_cb(tls_uart_msg_out_t msg_type,  uint8_t *ptr, int length)
+{
+#define BLE_UART_OUTPUT_MAX 768
+        
+        int ret = -1;
+        int len = 0;
+        u16 i=0;
+        char *buf;
+        u8 hostif_type;
+        struct tls_hostif *hif = tls_get_hostif();       
+#if TLS_CONFIG_RMMS
+        if (hif->last_bt_cmd_mode == CMD_MODE_RMMS_ATCMD)
+        {
+            hostif_type = HOSTIF_MODE_RMMS_AT;
+        }
+        else
+#endif
+        {
+            if (hif->last_bt_cmd_mode == CMD_MODE_UART0_ATCMD)
+            {
+                hostif_type = HOSTIF_MODE_UART0;
+            }
+            else
+            {
+                hostif_type = HOSTIF_MODE_UART1_LS;
+            }
+        }
+    
+        buf = tls_mem_alloc(BLE_UART_OUTPUT_MAX);
+        if (!buf)
+        {
+            printf("alloc failed\r\n");
+            return ;
+        }
+        switch(msg_type)
+        {
+            case UART_OUTPUT_DATA:
+                len = sprintf(buf, "%s", "+DATA:");
+                
+                for(i=0; i<length; i++)
+                {
+                    len += sprintf(buf+len, "%02x", ptr[i]);
+                }
+                break;
+            case UART_OUTPUT_CMD_ADVERTISING:
+                len = sprintf(buf, "%s", "+STATE:ADVERTISING");
+                break;
+            case UART_OUTPUT_CMD_CONNECTED:
+                len = sprintf(buf, "%s", "+STATE:CONNECTED");
+                break;
+            case UART_OUTPUT_CMD_DISCONNECTED:
+                len = sprintf(buf, "%s(%d)", "+STATE:DISCONNECTED", ptr[0]);
+                break;
+        }
+        buf[len++] = '\n';
+        buf[len++] = 0;       
+        ret = tls_hostif_process_cmdrsp(hostif_type, buf, len);        
+    
+        if (ret)
+            tls_mem_free(buf);
+
+    
+        return ;
+
+}
+
+#endif
+int ble_read_rssi_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+#if (WM_BLE_INCLUDED == CFG_ON)
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bleconn.cmd_mode;
+    
+    hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
+    hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM); 
+
+    ret = tls_dm_read_remote_rssi(cmd->bleconn.addr);
+
+	if(ret == TLS_BT_STATUS_SUCCESS)
+	{
+		ret = tls_ble_register_report_evt(WM_BLE_DM_REPORT_RSSI_EVT, ble_report_evt_cb);
+	}else
+    {
+	    hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_ACTIVE_BT_DM);
+	    goto end_tag;        
+    }  
+    bt_wait_rsp_timeout(cmd->bt.cmd_mode, cmd, hif, 5);
+    
+end_tag:    
+#else
+    printf("TODO TODO\r\n");
+#endif  
+    
+ 	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;   
+}
+
+int ble_demo_scan_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+
+    ret = tls_ble_demo_scan(cmd->blescan.cmd);
+    
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;    
+}
 int ble_scan_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
 {
     tls_bt_status_t ret;
     struct tls_hostif *hif = tls_get_hostif();
-
+#if (WM_BLE_INCLUDED == CFG_ON)
     if (cmd->blescan.cmd)
     {
         hif->last_bt_cmd_mode = cmd->blescan.cmd_mode;
@@ -4988,21 +6587,190 @@ int ble_scan_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cm
 
 		if(ret == TLS_BT_STATUS_SUCCESS)
 		{
-			ret = wm_ble_register_scan_result(ble_scan_result_report);
+			ret = tls_ble_register_report_evt(WM_BLE_DM_SCAN_RES_EVT|WM_BLE_DM_SCAN_RES_CMPL_EVT, ble_report_evt_cb);
 		}
     }
     else
     {
+    	hif->last_bt_cmd_mode = cmd->blescan.cmd_mode;
+    	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
+    	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM);        
+		
         ret = tls_ble_scan(FALSE);
+        
+        if (ret != TLS_BT_STATUS_SUCCESS)
+        {
+		    hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_ACTIVE_BT_DM);
+		    goto end_tag;
+	    }
+	
+	    ret = bt_wait_rsp_timeout(cmd->bt.cmd_mode, cmd, hif, 5);
+        
 		if(ret == TLS_BT_STATUS_SUCCESS)
 		{
-			ret = wm_ble_deregister_scan_result(ble_scan_result_report);
-		}
+			ret = tls_ble_deregister_report_evt(WM_BLE_DM_SCAN_RES_EVT|WM_BLE_DM_SCAN_RES_CMPL_EVT, ble_report_evt_cb);
+        }
+    }
+    
+end_tag:
+#else
+    if(cmd->blescan.cmd)
+    {
+        hif->last_bt_cmd_mode = cmd->blescan.cmd_mode;
+        tls_ble_demo_scan_at_cmd_register(ble_gap_scan_at_callback);
+        ret = tls_ble_gap_scan(WM_BLE_SCAN_PASSIVE, false);    
+    }else
+    {
+        hif->last_bt_cmd_mode = cmd->blescan.cmd_mode;
+    	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
+    	hif->uart_atcmd_bits |= (1<<UART_ATCMD_BIT_ACTIVE_BT_DM);
+        ret = tls_ble_gap_scan(WM_BLE_SCAN_STOP, false);
+        tls_ble_demo_scan_at_cmd_unregister();
+    }  
+#endif
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+   
+}
+
+int ble_demo_server_hid_uart_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_demo_server_hid_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_SUCCESS;
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_demo_server_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+
+    if (cmd->bt.cmd)
+    {
+#if (WM_NIMBLE_INCLUDED == CFG_ON)    
+        ret = tls_ble_server_demo_api_init(NULL,NULL);
+#else
+        ret = tls_ble_server_demo_api_init(NULL);
+#endif
+    }
+    else
+    {
+        ret = tls_ble_server_demo_api_deinit();
+    }
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+int ble_demo_uart_server_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+
+    struct tls_hostif *hif = tls_get_hostif();
+
+    hif->last_bt_cmd_mode = cmd->bt.cmd_mode;    
+
+    if (cmd->bt.cmd)
+    {
+        ret = tls_ble_server_demo_api_init((void *)ble_uart_server_cb , NULL);
+    }
+    else
+    {
+        ret = tls_ble_server_demo_api_deinit();
     }
 
 	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
 }
 
+int ble_demo_uart_server_send_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = 0;
+
+    ret = tls_ble_server_demo_api_send_msg(cmd->btparamudata.param, cmd->btparamudata.param_len);
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+
+int ble_demo_client_multi_conn_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+
+    if (cmd->bt.cmd)
+    {
+        ret = tls_ble_client_multi_conn_demo_api_init();
+    }
+    else
+    {
+        ret = tls_ble_client_multi_conn_demo_api_deinit();
+    }
+
+
+    return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+int ble_demo_client_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+
+    if (cmd->bt.cmd)
+    {
+#if (WM_NIMBLE_INCLUDED == CFG_ON)     
+        ret = tls_ble_client_demo_api_init(NULL, NULL);
+#else
+        ret = tls_ble_client_demo_api_init(NULL);
+#endif
+    }
+    else
+    {
+        ret = tls_ble_client_demo_api_deinit();
+    }
+
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+int ble_scan_chnl_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret;
+
+    ret = tls_ble_set_scan_chnl_map(cmd->bt.cmd);
+    
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+int ble_uart_mode_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_UNION *cmd, union HOSTIF_CMDRSP_PARAMS_UNION * cmdrsp)
+{
+    tls_bt_status_t ret = TLS_BT_STATUS_FAIL;
+
+    /*enable, type: 1, server mode; 2 client mode;  level: uart index*/
+    if(cmd->btctrl.type)
+    {
+        if(cmd->btctrl.type ==1)
+        {
+            ret = tls_ble_uart_init(BLE_UART_SERVER_MODE, cmd->btctrl.level, NULL);
+        }else if(cmd->btctrl.type ==2)
+        { 
+           ret = tls_ble_uart_init(BLE_UART_CLIENT_MODE, cmd->btctrl.level, NULL);
+        }
+    }else
+    {
+        /*disable function*/
+        if(cmd->btctrl.level==1)
+        {
+            ret = tls_ble_uart_deinit(BLE_UART_SERVER_MODE, 0x01);
+        }else if(cmd->btctrl.level==2)
+        {
+           ret = tls_ble_uart_deinit(BLE_UART_CLIENT_MODE, 0x01); 
+        }        
+    }
+
+	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
+}
+
+#if (WM_BLE_INCLUDED == CFG_ON )
 void ble_gatt_evt_cback(tls_ble_evt_t event, tls_ble_msg_t *msg)
 {
 #define BLE_EVT_BUF_LEN 1248
@@ -5279,7 +7047,7 @@ int ble_create_server_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_
     hif->last_bt_cmd_mode = cmd->blesv.cmd_mode;
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 
-	ret = wm_demo_prof_init(cmd->blesv.uuid, ble_gatt_evt_cback);
+	ret = tls_ble_demo_prof_init(cmd->blesv.uuid, ble_gatt_evt_cback);
     if (ret != TLS_BT_STATUS_SUCCESS)
     {
         goto end_tag;
@@ -5428,7 +7196,7 @@ int ble_destory_server_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS
     hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 
-    ret = wm_demo_prof_deinit(cmd->bt.cmd);
+    ret = tls_ble_demo_prof_deinit(cmd->bt.cmd);
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
 		goto end_tag;
@@ -5451,7 +7219,6 @@ int ble_server_connect_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 
 	memcpy(addr.address, cmd->bleconn.addr, 6);asm("nop");asm("nop");asm("nop");
-    hci_dbg_hexstring("connect addr:", cmd->bleconn.addr, 6);
     ret = tls_ble_server_connect(cmd->bleconn.server_if, (const tls_bt_addr_t *)&addr, 1, 2);
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
@@ -5539,7 +7306,7 @@ int ble_client_create_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS_
     hif->last_bt_cmd_mode = cmd->blesv.cmd_mode;
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 	
-	ret = wm_demo_cli_init(cmd->blesv.uuid, ble_gatt_evt_cback);
+	ret = tls_ble_demo_cli_init(cmd->blesv.uuid, ble_gatt_evt_cback);
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
 		goto end_tag;
@@ -5622,7 +7389,7 @@ int ble_client_reg_notify_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PAR
     hif->last_bt_cmd_mode = cmd->blenty.cmd_mode;
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 
-    ret = tls_ble_client_register_for_notification(cmd->blenty.client_if, (const tls_bt_addr_t *)cmd->blenty.addr, cmd->blenty.attr_handle);
+    ret = tls_ble_client_register_for_notification(cmd->blenty.client_if, (const tls_bt_addr_t *)cmd->blenty.addr, cmd->blenty.attr_handle, cmd->blenty.conn_id);
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
 		goto end_tag;
@@ -5642,7 +7409,7 @@ int ble_client_dereg_notify_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_P
     hif->last_bt_cmd_mode = cmd->blenty.cmd_mode;
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 
-    ret = tls_ble_client_register_for_notification(cmd->blenty.client_if, (const tls_bt_addr_t *)cmd->blenty.addr, cmd->blenty.attr_handle);
+    ret = tls_ble_client_deregister_for_notification(cmd->blenty.client_if, (const tls_bt_addr_t *)cmd->blenty.addr, cmd->blenty.attr_handle, cmd->blenty.conn_id);
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
 		goto end_tag;
@@ -5662,9 +7429,10 @@ int ble_client_access_characteristic_proc(u8 set_opt, u8 update_flash, union HOS
     hif->last_bt_cmd_mode = cmd->bleacc.cmd_mode;
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 
+	/*character write operation*/
 	if (cmd->bleacc.mode == 0)
 	{
-		ret = tls_ble_client_write_characteristic(cmd->bleacc.conn_id, cmd->bleacc.handle, 0, cmd->bleacc.data_len, cmd->bleacc.auth_req, (char *)cmd->bleacc.data);
+		ret = tls_ble_client_write_characteristic(cmd->bleacc.conn_id, cmd->bleacc.handle, 2, cmd->bleacc.data_len, cmd->bleacc.auth_req, (char *)cmd->bleacc.data);
 	}
 	else
 	{
@@ -5710,7 +7478,7 @@ int ble_client_destory_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS
     hif->last_bt_cmd_mode = cmd->bt.cmd_mode;
 	hif->uart_atcmd_bits &= ~(1 << UART_ATCMD_BIT_BT);
 
-    ret = wm_demo_cli_deinit(cmd->bt.cmd);
+    ret = tls_ble_demo_cli_deinit(cmd->bt.cmd);
 	if (ret != TLS_BT_STATUS_SUCCESS)
 	{
 		goto end_tag;
@@ -5741,6 +7509,9 @@ int ble_client_cfg_mtu_proc(u8 set_opt, u8 update_flash, union HOSTIF_CMD_PARAMS
 end_tag:
 	return (ret == TLS_BT_STATUS_SUCCESS) ? 0 : -CMD_ERR_OPS;
 }
+#endif
+
+
 
 #endif
 
@@ -5772,8 +7543,8 @@ static struct tls_cmd_t  at_ri_cmd_tbl[] = {
     { "PMTF", HOSTIF_CMD_PMTF, 0x11, 0, 0,pmtf_proc},
     { "IOC", HOSTIF_CMD_GPIO, 0x11, 0, 0, ioc_proc},
     { "WJOIN", HOSTIF_CMD_WJOIN, 0x11, 0, 0,wjoin_proc},
-    { "WLEAV", HOSTIF_CMD_WLEAVE, 0x13, 1, 0,wleav_proc},
-    { "WSCAN", HOSTIF_CMD_WSCAN, 0x11, 0, 0,wscan_proc},
+    { "WLEAV", HOSTIF_CMD_WLEAVE, 0x33, 1, 0,wleav_proc},
+    { "WSCAN", HOSTIF_CMD_WSCAN, 0x13, 0, 0,wscan_proc},
 #if TLS_CONFIG_SOCKET_RAW || TLS_CONFIG_SOCKET_STD
     { "LKSTT", HOSTIF_CMD_LINK_STATUS, 0x19, 0, 0,lkstt_proc},
     { "ENTM", HOSTIF_CMD_NOP, 0x1, 0, 0, entm_proc},
@@ -5886,44 +7657,73 @@ static struct tls_cmd_t  at_ri_cmd_tbl[] = {
     { "WWPS", HOSTIF_CMD_WPS, 0x7F, 1, 1, wwps_proc},
 #endif
 	{ "CUSTDATA", HOSTIF_CMD_CUSTDATA, 0x19, 0, 0, custdata_proc},
-#if 1
+
 	{ "WIDTH", HOSTIF_CMD_NOP, 0x2, 2, 0, tls_tx_sin},
 	{ "&RXSIN", HOSTIF_CMD_NOP, 0x2, 2, 0, tls_rx_wave},
-#endif
+
 	{ "TXLO", HOSTIF_CMD_NOP, 0x7F, 1,  0,  tls_tx_lo_proc},
 	{ "TXIQ", HOSTIF_CMD_NOP, 0x7F, 2,  0,  tls_tx_iq_mismatch_proc},
 	{ "FREQ", HOSTIF_CMD_NOP, 0x7F, 1,  0,  tls_freq_error_proc},
-	{ "VCG",    HOSTIF_CMD_NOP, 0x7F, 1, 0 , tls_rf_vcg_ctrl_proc},
+	{ "&CALFIN",    HOSTIF_CMD_NOP, 0x7F, 0, 0 , tls_rf_cal_finish_proc},
 	{ "&LPTPD", HOSTIF_CMD_NOP, 0x7F, 1, 0, tls_lptperiod_proc},
 	
 	{ "STDBY", HOSTIF_CMD_NOP, 0x1, 0, 0,stand_by_power_down},
 	{ "CPUSTA", HOSTIF_CMD_NOP, 0x2, 1, 0,cpu_state_proc},
 	{ "CPUDIV", HOSTIF_CMD_NOP, 0xb, 1, 0,cpu_clock_proc},
-#if TLS_CONFIG_BT
-	{ "BTCFGHOST", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_config_host_proc},
-
-	{ "BTCTRLEN", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, bt_ctrl_enable_proc},
-	{ "BTCTRLDES", HOSTIF_CMD_NOP, ATCMD_OP_NULL, 0, 0, bt_ctrl_destory_proc},
+#if (WM_BT_INCLUDED == CFG_ON || WM_BLE_INCLUDED == CFG_ON || WM_NIMBLE_INCLUDED == CFG_ON)
 
 	{ "BTEN", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, bt_enable_proc},
 	{ "BTDES", HOSTIF_CMD_NOP, ATCMD_OP_NULL, 0, 0, bt_destory_proc},
-	
+	{ "&BTMAC", HOSTIF_CMD_NOP, 0xF, 1, 0, bt_mac_proc},
+	{ "&BTNAME", HOSTIF_CMD_NOP, 0xF, 1, 0, bt_name_proc},
 	{ "BTCTRLGS", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_QU | RICMD_OP_GET, 0, 0, bt_ctrl_get_status_proc},
 	{ "BTSLEEP", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_sleep_proc},
 	{ "BLETPS", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_tx_power_set_proc},
 	{ "BLETPG", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_QU | RICMD_OP_GET, 1, 0, ble_tx_power_get_proc},
 	{ "BTTXPOW", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_GET | RICMD_OP_SET, 2, 0, bt_tx_power_proc},
-	{ "BTSCOPATH", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_sco_path_proc},
 	{ "BTTEST", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_test_mode_proc},
+    { "BTRF", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_rf_mode_proc},
 
+#if (WM_BTA_AV_SINK_INCLUDED == CFG_ON)
+    { "BTAVS", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_audio_sink_proc},
+#endif  
+#if (WM_BTA_HFP_HSP_INCLUDED == CFG_ON)
+    { "BTHFP", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_hfp_client_proc},
+    { "BTDIAL",HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_dial_up_proc},
+#endif
+#if (WM_BTA_SPPS_INCLUDED == CFG_ON)
+    { "BTSPPS", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_spp_server_proc},
+#endif 
+#if (WM_BTA_SPPC_INCLUDED == CFG_ON)
+    { "BTSPPC", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_spp_client_proc},
+#endif 
+
+#if (WM_BT_INCLUDED == CFG_ON)
+    { "BTSCM", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_scan_mode_proc},
+    { "BTINQUIRY", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, bt_inquiry_proc},
+#endif 
+
+#if (WM_BLE_INCLUDED == CFG_ON || WM_NIMBLE_INCLUDED == CFG_ON)    
 	{ "BLEADV", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_adv_proc},
-	{ "BLEADATA", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_adv_data_proc},
+	{ "BLEADATA", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_adv_data_proc},
+	{ "BLESCRSP", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_scan_rsp_proc},
 	{ "BLEAPRM", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET | RICMD_OP_SET, 5, 0, ble_adv_param_proc},
-	{ "BLEROLE", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_role_proc},
-	{ "BLESCPRM", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_scan_param_proc},
+	{ "BLESCPRM", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_scan_param_proc},
 	{ "BLESFLT", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_scan_filter_proc},
 	{ "BLESCAN", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_scan_proc},
-
+	{ "BLERDRSSI", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_read_rssi_proc},
+	{ "BLEDS", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_server_proc},
+	{ "BLEDC", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_client_proc},
+	{ "BLEDCMC", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_client_multi_conn_proc},
+	{ "BLESSCM", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_scan_chnl_proc},
+	{ "BLEUM", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_uart_mode_proc},
+	{ "BLEDMADV", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_adv_proc},
+	{ "BLEDMSCAN", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_scan_proc},
+	{ "BLEHIDS", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_server_hid_proc},
+	{ "BLEHIDU", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_server_hid_uart_proc},
+	{ "BLEUDS", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_uart_server_proc},
+	{ "BLEUSND", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_demo_uart_server_send_proc},
+#if (WM_BLE_INCLUDED == CFG_ON)
 	{ "BLECTSV", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_create_server_proc},
 	{ "BLEADDSC", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_add_service_proc},
 	{ "BLEADDCH", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 5, 0, ble_add_characteristic_proc},
@@ -5941,12 +7741,78 @@ static struct tls_cmd_t  at_ri_cmd_tbl[] = {
 	{ "BLECCONN", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_client_connect_proc},
 	{ "BLECSSC", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_client_scan_service_proc},
 	{ "BLECGDB", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_client_get_gatt_proc},
-	{ "BLECRNTY", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_client_reg_notify_proc},
-	{ "BLECDNTY", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_client_dereg_notify_proc},
-	{ "BLECACH", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 5, 0, ble_client_access_characteristic_proc},
+	{ "BLECRNTY", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_client_reg_notify_proc},
+	{ "BLECDNTY", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_client_dereg_notify_proc},
+	{ "BLECACH", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_client_access_characteristic_proc},
 	{ "BLECDIS", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_client_disconnect_proc},
 	{ "BLECDES", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_client_destory_proc},
 	{ "BLECMTU", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_client_cfg_mtu_proc},
+#endif
+
+#if (WM_NIMBLE_INCLUDED== CFG_ON)
+#if (WM_MESH_INCLUDED == CFG_ON)
+    { "MSNODEEN", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_node_enable_proc},        /*v*/
+    { "MSPROVEN", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_provisioner_enable_proc}, /*v*/
+    { "MSSCANPD", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_scan_unprov_node_proc},   /*v*/
+    { "MSSCANND", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_scan_prov_node_proc},     /*n*/
+    { "MSGETCPD", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_mesh_get_comp_data_proc},      /*v*/
+    { "MSPROVAD", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_mesh_prov_node_proc},          /*v*/
+    { "MSADDLAKEY", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_mesh_add_local_app_key_proc},/*v*/ 
+    { "MSADDRAKEY", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 5, 0, ble_mesh_add_app_key_proc},      /*v*/
+    { "MSBNDAKEY", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET , 5, 0, ble_mesh_bind_app_key_proc},      /*v*/
+    { "MSUBNDAKEY", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 5, 0, ble_mesh_unbind_app_key_proc},    /*v*/
+    { "MSRELAYSET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 5, 0, ble_mesh_set_relay_proc},    /*v*/
+    { "MSRELAYGET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_mesh_get_relay_proc},    /*v*/
+    
+    { "MSPROXYSET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_mesh_set_proxy_proc},    /*v*/
+    { "MSPROXYGET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_mesh_get_proxy_proc},    /*v*/
+
+    { "MSFRDSET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_mesh_set_friend_proc},     /*v*/
+    { "MSFRDGET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_mesh_get_friend_proc},     /*v*/
+
+    { "MSSUBGET", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 4, 0, ble_mesh_get_sub_proc},
+    { "MSSUBADD", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 5, 0, ble_mesh_add_sub_proc},
+    { "MSSUBDEL", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 5, 0, ble_mesh_del_sub_proc},
+
+    { "MSPUBGET", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 4, 0, ble_mesh_get_pub_proc},
+    { "MSPUBSET", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 11, 0, ble_mesh_set_pub_proc},
+
+    { "MSHBPUBGET", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 2, 0, ble_mesh_get_hb_pub_proc},
+    { "MSHBPUBSET", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 8, 0, ble_mesh_set_hb_pub_proc},
+
+    { "MSHBSUBGET", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 2, 0, ble_mesh_get_hb_sub_proc},
+    { "MSHBSUBSET", HOSTIF_CMD_NOP, ATCMD_OP_NULL | ATCMD_OP_EQ | ATCMD_OP_EP | ATCMD_OP_QU | RICMD_OP_SET, 8, 0, ble_mesh_set_hb_sub_proc},
+
+    { "MSONOFFSET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_mesh_gen_set_onoff_proc}, /*V*/
+    { "MSONOFFGET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_mesh_gen_get_onoff_proc}, /*v*/
+    { "MSONOFFPUB", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_gen_pub_proc},  /*v*/
+
+    { "MSLVLSET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_mesh_gen_set_level_proc},
+    { "MSLVLGET", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 3, 0, ble_mesh_gen_get_level_proc},
+
+    
+    { "MSCLRRPL", HOSTIF_CMD_NOP, ATCMD_OP_NULL, 0, 0, ble_mesh_clear_rpl_proc},
+    { "MSAC", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_config_node_proc},            /*u*/
+    { "MSRST", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 2, 0, ble_mesh_reset_node_proc},            /*v*/   
+    { "MSOOBNUM", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_oob_number_proc}, 
+    { "MSOOBSTR", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_oob_string_proc},
+    { "MSVNDSND", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_mesh_vnd_send_proc},    
+
+    /**node demo */
+    { "MSNODEDM",  HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_node_demo_proc},/*v*/
+    { "MSUART",    HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 4, 0, ble_mesh_uart_proc},
+    { "MSWRADDR", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_change_primary_addr_proc}, 
+    { "MSRDADDR", HOSTIF_CMD_NOP, ATCMD_OP_NULL, 0, 0, ble_mesh_read_primary_addr_proc},
+    { "MSRDCFG", HOSTIF_CMD_NOP, ATCMD_OP_NULL, 0, 0, ble_mesh_read_cfg_proc},
+    { "MSERASE", HOSTIF_CMD_NOP, ATCMD_OP_NULL, 0, 0, ble_mesh_erase_cfg_proc},
+    { "MSWRTTL", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_change_default_ttl_proc}, 
+    //{ "MSLVLMV", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_client_gen_level_move_proc},
+    //{ "MSLVLDLTA", HOSTIF_CMD_NOP, ATCMD_OP_EQ | ATCMD_OP_EP | RICMD_OP_SET, 1, 0, ble_mesh_client_gen_level_delta_proc},
+
+#endif
+#endif
+
+#endif	
 #endif
 
 	{ NULL, HOSTIF_CMD_NOP, 0, 0 , 0, NULL},
@@ -5970,8 +7836,8 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
     else if ((strcmp("Z", at_name) == 0) || (strcmp("E", at_name) == 0) || (strcmp("RSTF", at_name) == 0) ||
         (strcmp("PMTF", at_name) == 0) || (strcmp("IOC", at_name) == 0)  ||
         (strcmp("LKSTT", at_name) == 0) || (strcmp("CNTPARAM", at_name) == 0)
-#if TLS_CONFIG_BT
-        || (strcmp("BTCTRLDES", at_name) == 0) || (strcmp("BTCTRLGS", at_name) == 0)
+#if (WM_BLE_INCLUDED == CFG_ON) || (WM_BT_INCLUDED == CFG_ON)
+        || (strcmp("BTCTRLGS", at_name) == 0)
 #endif
         ){
         ;
@@ -6012,9 +7878,52 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         if (err)
             return -CMD_ERR_INV_PARAMS;
     }
-    else if ((strcmp("WSCAN", at_name) == 0) || (strcmp("WJOIN", at_name) == 0)) {
+    else if (strcmp("WJOIN", at_name) == 0) {
 		cmd->wscan.mode = tok->cmd_mode;
-    }else if (strcmp("SSID", at_name) == 0 || strcmp("DNS", at_name) == 0  || strcmp("PASS", at_name) == 0
+    }
+	else if (strcmp("WSCAN", at_name) == 0)
+	{
+        int ret;
+		u32 value = 0;
+		cmd->scanparam.mode = tok->cmd_mode;
+		cmd->scanparam.switchinterval = 0;
+		cmd->scanparam.scantimes = 0;
+		cmd->scanparam.chlist = 0;
+		cmd->scanparam.scantype = 0;
+
+		switch(tok->arg_found)
+		{
+			case 4:
+				ret = string_to_uint(tok->arg[3], &value);
+		        if(ret)
+		            return -CMD_ERR_INV_PARAMS;
+				cmd->scanparam.scantype = value;
+
+			case 3:
+				ret = string_to_uint(tok->arg[2], &value);
+		        if(ret)
+		            return -CMD_ERR_INV_PARAMS;
+				cmd->scanparam.switchinterval = value;
+			case 2:
+				ret = string_to_uint(tok->arg[1], &value);
+		        if(ret)
+		            return -CMD_ERR_INV_PARAMS;
+				cmd->scanparam.scantimes = value;
+			case 1:
+				ret = hexstr_to_unit(tok->arg[0], &value);
+		        if(ret)
+		            return -CMD_ERR_INV_PARAMS;
+				cmd->scanparam.chlist = value;
+			break;
+			default:
+				cmd->scanparam.switchinterval = 0;
+				cmd->scanparam.scantimes = 0;
+				cmd->scanparam.chlist = 0;
+				cmd->scanparam.scantype = 0;
+				break;
+		}		
+    }
+	else if (strcmp("SSID", at_name) == 0 || strcmp("DNS", at_name) == 0  || strcmp("PASS", at_name) == 0
 #if TLS_CONFIG_AP
               || strcmp("APSSID", at_name) == 0
 #endif
@@ -6180,9 +8089,9 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
 #if TLS_CONFIG_AP
 	||(strcmp("APWBGR", at_name) == 0)
 #endif
-#if TLS_CONFIG_BT
-	|| (strcmp("BTCTRLEN", at_name) == 0) || (strcmp("BLETPS", at_name) == 0)
-	|| (strcmp("BTEN", at_name) == 0)
+#if (WM_BLE_INCLUDED == CFG_ON || WM_BT_INCLUDED == CFG_ON ||WM_NIMBLE_INCLUDED == CFG_ON)
+    || (strcmp("BLETPS", at_name) == 0)
+	|| (strcmp("BTEN", at_name) == 0) || (strcmp("BLEUM", at_name) == 0)
 #endif
 )
     {
@@ -6198,11 +8107,612 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
             ret = string_to_uint(tok->arg[1], &params);
             if(ret)
                 return -CMD_ERR_INV_PARAMS;
+#if (WM_BLE_INCLUDED == CFG_ON || WM_BT_INCLUDED == CFG_ON ||WM_NIMBLE_INCLUDED == CFG_ON)
+			if(strcmp("BTEN", at_name) == 0)
+			{
+				if(params>(u32)TLS_BT_LOG_VERBOSE)
+					return -CMD_ERR_INV_PARAMS;
+			}
+#endif
             cmd->btctrl.level = (u8)params;
         }
 		cmd->btctrl.cmd_mode = tok->cmd_mode;
     }
-#if TLS_CONFIG_BT
+#if (WM_BLE_INCLUDED == CFG_ON || WM_BT_INCLUDED == CFG_ON ||WM_NIMBLE_INCLUDED == CFG_ON)
+
+#if (WM_MESH_INCLUDED == CFG_ON)
+     else if((strcmp("MSNODEEN", at_name) == 0) ||(strcmp("MSPROVEN", at_name) == 0)||(strcmp("MSSCANPD", at_name) == 0)||(strcmp("MSSCANND", at_name) == 0)
+        ||(strcmp("MSNODEDM", at_name) == 0)||(strcmp("MSONOFFPUB", at_name) == 0))
+     {
+            int ret = 0; 
+            u32 param;
+            if(tok->arg_found != 1)
+                return -CMD_ERR_INV_PARAMS;
+            ret = string_to_uint(tok->arg[0], &param);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->bt.cmd = (u8)param;
+
+            if(cmd->bt.cmd >1)
+                return -CMD_ERR_INV_PARAMS;
+
+            cmd->bt.cmd_mode = tok->cmd_mode;
+    }else if(strcmp("MSOOBNUM", at_name) == 0 || strcmp("MSWRADDR", at_name) == 0 || strcmp("MSWRTTL", at_name) == 0)
+    {
+            int ret = 0; 
+            u32 param;
+            if(tok->arg_found != 1)
+                return -CMD_ERR_INV_PARAMS;
+            ret = string_to_uint(tok->arg[0], &param);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btparamnum.param = param;
+   
+            cmd->btparamnum.cmd_mode = tok->cmd_mode;
+    }else if(strcmp("MSOOBSTR", at_name) == 0)
+    {
+            if(tok->arg_found != 1)
+                return -CMD_ERR_INV_PARAMS;
+          
+            strncpy((char*)cmd->btparamstr.param, tok->arg[0], 15);
+            cmd->btparamstr.cmd_mode = tok->cmd_mode;
+            
+    }else if (strcmp("MSGETCPD", at_name) == 0 ||strcmp("MSRST", at_name) == 0 || strcmp("MSRELAYGET", at_name) == 0
+                || strcmp("MSPROXYGET", at_name) == 0 || strcmp("MSFRDGET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        
+        if (tok->arg_found > 2)
+            return -CMD_ERR_INV_PARAMS;
+        
+        if(tok->arg_found == 2) {
+            ret = hexstr_to_unit(tok->arg[0], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            
+            cmd->bt2param.param1 = (u16)params;
+            ret = hexstr_to_unit(tok->arg[1], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->bt2param.param2 = (u16)params;
+            cmd->bt2param.cmd_mode = tok->cmd_mode;
+        }
+    }else if (strcmp("MSPROVAD", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 4)
+            return -CMD_ERR_INV_PARAMS;
+        if(tok->arg_found == 4) {
+            ret = strtohexarray(cmd->btprov.uuid, 16, tok->arg[0]);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            
+            ret = hexstr_to_unit(tok->arg[1], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btprov.net_idx = (u16)params;
+            
+            ret = hexstr_to_unit(tok->arg[2], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btprov.addr = (u16)params;
+
+            ret = hexstr_to_unit(tok->arg[3], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btprov.attention = (u8)params;           
+
+            cmd->btprov.cmd_mode = tok->cmd_mode;
+        }
+    }else if (strcmp("MSADDLAKEY", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 3)
+            return -CMD_ERR_INV_PARAMS;
+        
+
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamalk.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamalk.app_idx = (u16)params;
+
+        ret = strtohexarray(cmd->btparamalk.param, 16, tok->arg[2]);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;          
+
+        cmd->btparamalk.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSADDRAKEY", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 5)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamark.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamark.addr = (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamark.key_net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamark.key_app_idx = (u16)params;        
+
+        ret = strtohexarray(cmd->btparamark.param, 16, tok->arg[4]);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;          
+
+        cmd->btparamark.cmd_mode = tok->cmd_mode;
+    }else if ((strcmp("MSBNDAKEY", at_name) == 0) || (strcmp("MSUBNDAKEY", at_name) == 0))
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found < 5 || tok->arg_found > 6)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparambak.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparambak.dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparambak.elem_addr= (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparambak.app_key_idx= (u16)params;  
+        
+        ret = hexstr_to_unit(tok->arg[4], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparambak.mod_id= (u16)params;    
+
+        
+
+        if(tok->arg_found == 6)
+        {
+            ret = hexstr_to_unit(tok->arg[5], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btparambak.cid= (u16)params;            
+        }else
+        {
+            cmd->btparambak.cid = 0xFFFF;
+        }
+
+        cmd->btparambak.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSRELAYSET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 5)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamrelay.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamrelay.dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamrelay.val= (u8)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamrelay.count= (u8)params;        
+
+        ret = hexstr_to_unit(tok->arg[4], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamrelay.interval= (u8)params;        
+
+        cmd->btparamrelay.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSSUBADD", at_name) == 0 || strcmp("MSSUBDEL", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 5 && tok->arg_found != 6)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubadd.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubadd.dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubadd.elem_addr= (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubadd.sub_addr= (u16)params;        
+
+        ret = hexstr_to_unit(tok->arg[4], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubadd.mod_id = (u16)params; 
+
+        if(tok->arg_found == 6)
+        {
+            ret = hexstr_to_unit(tok->arg[5], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btparamsubadd.cid = (u16)params;         
+        }else
+        {
+            cmd->btparamsubadd.cid = 0xFFFF;
+        }
+
+        cmd->btparamsubadd.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSSUBGET", at_name) == 0 || strcmp("MSPUBGET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 4 && tok->arg_found != 5)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubget.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubget.dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubget.elem_addr= (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamsubget.mod_id = (u16)params; 
+
+        if(tok->arg_found == 5)
+        {
+            ret = hexstr_to_unit(tok->arg[4], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btparamsubget.cid = (u16)params;         
+        }else
+        {
+            cmd->btparamsubget.cid = 0xFFFF;
+        }
+
+        cmd->btparamsubget.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSHBSUBGET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 2)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.net_dst= (u16)params;
+
+        cmd->btparamhbsubset.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSHBSUBSET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 8)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.net_dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.hb_sub_src = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.hb_sub_dst = (u16)params; 
+
+        ret = hexstr_to_unit(tok->arg[4], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.hb_sub_period = (u8)params;    
+
+        ret = hexstr_to_unit(tok->arg[5], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.hb_sub_count = (u8)params; 
+        
+        ret = hexstr_to_unit(tok->arg[6], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.hb_sub_min = (u8)params; 
+
+        ret = hexstr_to_unit(tok->arg[7], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbsubset.hb_sub_max = (u8)params;
+
+        cmd->btparamhbsubset.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSHBPUBGET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 2)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.net_dst= (u16)params;
+
+        cmd->btparamhbpubset.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSHBPUBSET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 8)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.net_dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.hb_pub_dst= (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.hb_pub_count = (u8)params; 
+
+        ret = hexstr_to_unit(tok->arg[4], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.hb_pub_period = (u8)params;    
+
+        ret = hexstr_to_unit(tok->arg[5], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.hb_pub_ttl = (u8)params; 
+        
+        ret = hexstr_to_unit(tok->arg[6], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.hb_pub_feat = (u16)params; 
+
+        ret = hexstr_to_unit(tok->arg[7], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamhbpubset.hb_pub_net_idx = (u16)params;
+
+        cmd->btparamhbpubset.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSPUBSET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 11 && tok->arg_found != 12)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.elem_addr= (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.mod_id = (u16)params; 
+
+        ret = hexstr_to_unit(tok->arg[4], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.pub_addr = (u16)params;    
+
+        ret = hexstr_to_unit(tok->arg[5], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.pub_app_idx = (u16)params; 
+        
+        ret = hexstr_to_unit(tok->arg[6], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.pub_cred_flag= (u8)params; 
+
+        ret = hexstr_to_unit(tok->arg[7], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.pub_ttl = (u8)params;
+
+        ret = hexstr_to_unit(tok->arg[8], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.pub_period = (u8)params;
+        
+        ret = hexstr_to_unit(tok->arg[9], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.pub_count = (u8)params;
+
+        ret = hexstr_to_unit(tok->arg[10], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparampubset.pub_interval = (u8)params;
+
+        if(tok->arg_found == 12)
+        {
+            ret = hexstr_to_unit(tok->arg[11], &params);
+            if(ret)
+                return -CMD_ERR_INV_PARAMS;
+            cmd->btparampubset.cid = (u16)params;         
+        }else
+        {
+            cmd->btparampubset.cid = 0xFFFF;
+        }
+
+        cmd->btparampubset.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSPROXYSET", at_name) == 0 || strcmp("MSFRDSET", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 3)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamproxy.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamproxy.dst= (u16)params;
+
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamproxy.val= (u8)params;       
+
+        cmd->btparamproxy.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSONOFFSET", at_name) == 0 || strcmp("MSLVLSET", at_name) == 0 || strcmp("MSVNDSND", at_name) == 0 || strcmp("MSUART", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 4)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamonoffset.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamonoffset.dst= (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamonoffset.app_idx= (u16)params; 
+
+        ret = hexstr_to_unit(tok->arg[3], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamonoffset.val= (s16)params;       
+
+        cmd->btparamonoffset.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSONOFFGET", at_name) == 0 || strcmp("MSLVLGET", at_name) == 0 )
+    {
+        int ret;
+        u32 params;
+        if (tok->arg_found != 3)
+            return -CMD_ERR_INV_PARAMS;
+        
+        ret = hexstr_to_unit(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamonoffget.net_idx = (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[1], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamonoffget.dst= (u16)params;
+        
+        ret = hexstr_to_unit(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamonoffget.app_idx = (u16)params;      
+
+        cmd->btparamonoffget.cmd_mode = tok->cmd_mode;
+    }else if (strcmp("MSCLRRPL", at_name) == 0 ||strcmp("MSRDADDR", at_name) == 0 ||strcmp("MSRDCFG", at_name) == 0 ||strcmp("MSERASE", at_name) == 0)
+    {
+        if(tok->arg_found != 0)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->bt.cmd_mode = tok->cmd_mode;
+    }
+
+#endif
+
     else if (strcmp("BTTXPOW", at_name) == 0)
     {
         int ret;
@@ -6227,10 +8737,10 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
             return -CMD_ERR_INV_PARAMS;
         cmd->bt.cmd_mode = tok->cmd_mode;
     }
-    else if ((strcmp("BTCFGHOST", at_name) == 0)
-         	|| (strcmp("BTSLEEP", at_name) == 0) || (strcmp("BTSCOPATH", at_name) == 0) || (strcmp("BTTEST", at_name) == 0)
-         	|| (strcmp("BLEADV", at_name) == 0)
-            || (strcmp("BLEDESSV", at_name) == 0) || (strcmp("BLECDES", at_name) == 0))
+#if (WM_BT_INCLUDED == CFG_ON)    
+    else if (
+            (strcmp("BTAVS", at_name) == 0)|| (strcmp("BTHFP", at_name) == 0)
+         	|| (strcmp("BTSPPS", at_name) == 0)|| (strcmp("BTSPPC", at_name) == 0))
     {
         int ret = 0; 
         u32 param;
@@ -6240,8 +8750,115 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         if(ret)
             return -CMD_ERR_INV_PARAMS;
         cmd->bt.cmd = (u8)param;
+
+
+	    if(cmd->bt.cmd >1)
+		return -CMD_ERR_INV_PARAMS;
+
         cmd->bt.cmd_mode = tok->cmd_mode;
     }
+    else if ((strcmp("BTSCM", at_name) == 0)||(strcmp("BTINQUIRY", at_name) == 0))
+    {
+        int ret = 0; 
+        u32 param;
+        if(tok->arg_found != 1)
+            return -CMD_ERR_INV_PARAMS;
+        ret = string_to_uint(tok->arg[0], &param);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->bt.cmd = (u8)param;
+	
+        if(cmd->bt.cmd >2)
+			  return -CMD_ERR_INV_PARAMS;
+
+        cmd->bt.cmd_mode = tok->cmd_mode;
+    }
+    else if(strcmp("BTDIAL", at_name) == 0){
+        u8 *namestr = NULL;
+        if(tok->arg_found != 1)
+            return -CMD_ERR_INV_PARAMS;
+        atcmd_filter_quotation(&namestr, (u8 *)tok->arg[0]);
+        cmd->btname.len = strlen((char *)namestr);
+        memcpy(cmd->btname.name, namestr, cmd->btname.len);
+        cmd->btname.cmd_mode = tok->cmd_mode;
+    }
+
+#endif    
+    else if (
+         	(strcmp("BTSLEEP", at_name) == 0) || (strcmp("BTTEST", at_name) == 0)
+         	|| (strcmp("BLEDS", at_name) == 0)|| (strcmp("BLEDC", at_name) == 0)|| (strcmp("BLEDCMC", at_name) == 0)
+         	|| (strcmp("BLESSCM", at_name) == 0) ||(strcmp("BLEUDS", at_name) == 0)
+            || (strcmp("BTRF", at_name) == 0) || (strcmp("BLEHIDS", at_name) == 0)|| (strcmp("BLEHIDU", at_name) == 0)
+            )
+    {
+        int ret = 0; 
+        u32 param;
+        if(tok->arg_found != 1)
+            return -CMD_ERR_INV_PARAMS;
+        ret = string_to_uint(tok->arg[0], &param);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->bt.cmd = (u8)param;
+        if(strcmp("BLESSCM", at_name) == 0)
+        {
+            if((cmd->bt.cmd&0x80) ||(!cmd->bt.cmd))
+                return -CMD_ERR_INV_PARAMS;
+        }
+        else
+        {
+		    if(cmd->bt.cmd >1)
+			return -CMD_ERR_INV_PARAMS;
+        }
+        cmd->bt.cmd_mode = tok->cmd_mode;
+    }
+    else if(strcmp("BLEUSND", at_name) == 0)
+    {
+        int ret = 0;
+        int data_length = 0;
+        if(tok->arg_found != 1)
+            return -CMD_ERR_INV_PARAMS;
+        
+        data_length = strlen(tok->arg[0]);
+        #if 1
+        ret = strtohexarray(cmd->btparamudata.param, data_length>>1, tok->arg[0]);
+        if(ret != 0)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->btparamudata.param_len = data_length>>1;
+        #else
+        data_length = MIN(data_length, sizeof(cmd->btparamudata.param)-1);
+        strncpy(cmd->btparamudata.param, tok->arg[0], data_length);
+        cmd->btparamudata.param_len = data_length;
+        #endif
+        cmd->btparamudata.cmd_mode = tok->cmd_mode;
+    }            
+    else if ((strcmp("BLEADV", at_name) == 0)|| (strcmp("BLEDMADV", at_name) == 0))
+    {
+        int ret = 0; 
+        u32 param;
+        if(tok->arg_found != 1)
+            return -CMD_ERR_INV_PARAMS;
+        ret = string_to_uint(tok->arg[0], &param);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->bt.cmd = (u8)param;
+	
+        if(cmd->bt.cmd >2)
+			  return -CMD_ERR_INV_PARAMS;
+
+        cmd->bt.cmd_mode = tok->cmd_mode;
+    }
+	else if ((strcmp("BLEDESSV", at_name) == 0) || (strcmp("BLECDES", at_name) == 0))
+	{
+		int ret = 0; 
+        u32 param;
+        if(tok->arg_found != 1)
+            return -CMD_ERR_INV_PARAMS;
+        ret = string_to_uint(tok->arg[0], &param);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->bt.cmd = (u8)param;
+        cmd->bt.cmd_mode = tok->cmd_mode;
+	}
     else if (strcmp("BLETPG", at_name) == 0)
     {
         int ret;
@@ -6291,6 +8908,7 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         if(ret)
             return -CMD_ERR_INV_PARAMS;
         cmd->bleprm.channel_map = (u8)params;
+        memset(cmd->bleprm.peer_addr, 0 , ETH_ALEN);
     	switch (tok->arg_found)
     	{
     		case 8:
@@ -6308,12 +8926,12 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
                 if(ret)
                     return -CMD_ERR_INV_PARAMS;
                 cmd->bleprm.adv_filter_policy = (u8)params;
-    		break;
+    		    break;
     		default:
     			break;
     	}
     }
-    else if (strcmp("BLESCAN", at_name) == 0)
+    else if (strcmp("BLESCAN", at_name) == 0 ||strcmp("BLEDMSCAN", at_name) == 0)
     {
         int ret = 0; 
         u32 param;
@@ -6329,41 +8947,24 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         cmd->blescan.cmd = (u8)param;
         cmd->blescan.cmd_mode = tok->cmd_mode;
     }
-	else if (strcmp("BLEADATA", at_name) == 0)
+	else if (strcmp("BLEADATA", at_name) == 0 || strcmp("BLESCRSP", at_name) == 0)
     {
         int ret = 0; 
-        u32 param;
 		int len = 0;
-        if(tok->arg_found != 2)
+        if(tok->arg_found != 1)
             return -CMD_ERR_INV_PARAMS;
-        ret = string_to_uint(tok->arg[0], &param);
-        if(ret)
-            return -CMD_ERR_INV_PARAMS;
-        cmd->bleadv.include_name = (u8)param;
 		
-		len = strlen(tok->arg[1]);
-		len = MIN(len, 24);
+		len = strlen(tok->arg[0]);
+		len = MIN(len, 62);
+
+        if(len&0x01)   //ascii string len must be even length;
+            return -CMD_ERR_INV_PARAMS;
 		
 		cmd->bleadv.len = len/2; //asciistring to hexstring, expected length;
-		ret = strtohexarray(cmd->bleadv.data,len/2,tok->arg[1]); 
+		ret = strtohexarray(cmd->bleadv.data,len/2,tok->arg[0]); 
 		if(ret)
 			return -CMD_ERR_INV_PARAMS;
 		cmd->bleadv.cmd_mode = tok->cmd_mode;
-    }
-    else if (strcmp("BLEROLE", at_name) == 0)
-    {
-        int ret;
-        u32 params;
-        if(tok->arg_found != 2)
-            return -CMD_ERR_INV_PARAMS;
-        ret = string_to_uint(tok->arg[0], &params);
-        if(ret)
-            return -CMD_ERR_INV_PARAMS;
-        cmd->blerole.role = (u8)params;
-        ret = hexstr_to_unit(tok->arg[1], &params);
-        if(ret)
-            return -CMD_ERR_INV_PARAMS;
-        cmd->blerole.uuid = (u16)params;
     }
     else if (strcmp("BLECTSV", at_name) == 0 || strcmp("BLECCT", at_name) == 0)
     {
@@ -6555,6 +9156,19 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
             return -CMD_ERR_INV_PARAMS;
         cmd->bleconn.cmd_mode = tok->cmd_mode;
     }
+    else if (strcmp("BLERDRSSI", at_name) == 0 )
+    {
+        u8 *tmpmac = NULL;
+        if(tok->arg_found != 1)
+            return -CMD_ERR_INV_PARAMS;
+        
+        if (atcmd_filter_quotation(&tmpmac, (u8 *)tok->arg[0]))
+            return -CMD_ERR_INV_PARAMS;
+        if (strtohexarray(cmd->bleconn.addr, ETH_ALEN, (char *)tmpmac)< 0)  
+            return -CMD_ERR_INV_PARAMS;
+        
+        cmd->bleconn.cmd_mode = tok->cmd_mode;
+    }
 	else if (strcmp("BLECMTU", at_name) == 0)
     {
         int ret;
@@ -6573,8 +9187,7 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
 
         cmd->blecmtu.cmd_mode = tok->cmd_mode;
     }
-    else if (strcmp("BLESVDIS", at_name) == 0 || strcmp("BLECDIS", at_name) == 0
-            || strcmp("BLECRNTY", at_name) == 0 || strcmp("BLECDNTY", at_name) == 0)
+    else if (strcmp("BLESVDIS", at_name) == 0 || strcmp("BLECDIS", at_name) == 0)
     {
         int ret;
         u32 params;
@@ -6595,6 +9208,33 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         cmd->bleconn.conn_id = (u16)params;
         cmd->bleconn.cmd_mode = tok->cmd_mode;
     }
+    else if (strcmp("BLECRNTY", at_name) == 0 || strcmp("BLECDNTY", at_name) == 0)
+    {
+        int ret;
+        u32 params;
+        u8 *tmpmac = NULL;
+        if(tok->arg_found != 4)
+            return -CMD_ERR_INV_PARAMS;
+        ret = string_to_uint(tok->arg[0], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->blenty.client_if = (u8)params;
+        if (atcmd_filter_quotation(&tmpmac, (u8 *)tok->arg[1]))
+            return -CMD_ERR_INV_PARAMS;
+        if (strtohexarray(cmd->blenty.addr, ETH_ALEN, (char *)tmpmac)< 0)  
+            return -CMD_ERR_INV_PARAMS;
+        ret = string_to_uint(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->blenty.attr_handle= (u16)params;
+
+        ret = string_to_uint(tok->arg[2], &params);
+        if(ret)
+            return -CMD_ERR_INV_PARAMS;
+        cmd->blenty.conn_id = (u16)params; 
+        
+        cmd->blenty.cmd_mode = tok->cmd_mode;
+    }
     else if (strcmp("BLECSSC", at_name) == 0 || strcmp("BLECGDB", at_name) == 0)
     {
         int ret;
@@ -6606,18 +9246,52 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
             return -CMD_ERR_INV_PARAMS;
         cmd->bleconn.conn_id = (u16)params;
         cmd->bleconn.cmd_mode = tok->cmd_mode;
+    }else if(strcmp("&BTMAC", at_name) == 0){
+        u8 *tmpmac = NULL;
+        if(tok->arg_found == 1){
+	        if (atcmd_filter_quotation(&tmpmac, (u8 *)tok->arg[0]))
+	            return -CMD_ERR_INV_PARAMS;
+	        cmd->mac.length = strlen((char *)tmpmac);
+	        if (strtohexarray(cmd->mac.macaddr, ETH_ALEN, (char *)tmpmac)< 0)  
+	            return -CMD_ERR_INV_PARAMS;
+        	}
+    }else if(strcmp("&BTNAME", at_name) == 0){
+        u8 *namestr = NULL;
+        if(tok->arg_found == 1){
+                atcmd_filter_quotation(&namestr, (u8 *)tok->arg[0]);
+                cmd->btname.len = strlen((char *)namestr);
+                if(cmd->btname.len>16)
+                {
+                    return -CMD_ERR_INV_PARAMS;
+                }
+                memcpy(cmd->btname.name, namestr, cmd->btname.len);
+                cmd->btname.cmd_mode = tok->cmd_mode;   
+        	}
     }
     else if (strcmp("BLECACH", at_name) == 0)
     {
         int ret;
         u32 params;
         u8 *tmpdata;
-        if(tok->arg_found != 5)
-            return -CMD_ERR_INV_PARAMS;
+
         ret = string_to_uint(tok->arg[0], &params);
         if(ret)
             return -CMD_ERR_INV_PARAMS;
         cmd->bleacc.mode = (u8)params;
+        /*read opertion, 4 parameters */
+		if(cmd->bleacc.mode == 1)
+		{
+			if(tok->arg_found != 4)
+            	return -CMD_ERR_INV_PARAMS;
+		}else if(cmd->bleacc.mode == 0)
+		{
+			if(tok->arg_found != 5)
+            	return -CMD_ERR_INV_PARAMS;			
+		}else
+		{
+			return -CMD_ERR_INV_PARAMS;
+		}
+		
         ret = string_to_uint(tok->arg[1], &params);
         if(ret)
             return -CMD_ERR_INV_PARAMS;
@@ -6630,27 +9304,39 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         if(ret)
             return -CMD_ERR_INV_PARAMS;
         cmd->bleacc.auth_req = (u8)params;
-        ret = atcmd_filter_quotation(&tmpdata, (u8 *)tok->arg[4]);
-		if (ret)
-            return -CMD_ERR_INV_PARAMS;
-        cmd->bleacc.data_len = strlen((char *)tmpdata);
-        memcpy(cmd->bleacc.data, tmpdata, cmd->bleacc.data_len);
+
+        /*write operation, handle the input data*/
+		if(cmd->bleacc.mode == 0)
+		{
+	        ret = atcmd_filter_quotation(&tmpdata, (u8 *)tok->arg[4]);
+			if (ret)
+	            return -CMD_ERR_INV_PARAMS;
+
+	        cmd->bleacc.data_len = strlen((char *)tmpdata);
+	        memcpy(cmd->bleacc.data, tmpdata, cmd->bleacc.data_len);
+		}
         cmd->bleacc.cmd_mode = tok->cmd_mode;
     }
     else if (strcmp("BLESCPRM", at_name) == 0)
     {
         int ret;
         u32 params;
-        if(tok->arg_found != 2)
+        if(tok->arg_found != 3)
             return -CMD_ERR_INV_PARAMS;
         ret = hexstr_to_unit(tok->arg[0], &params);
         if(ret)
             return -CMD_ERR_INV_PARAMS;
         cmd->bleprm.adv_int_min = params;
+        
         ret = hexstr_to_unit(tok->arg[1], &params);
         if(ret)
             return -CMD_ERR_INV_PARAMS;
         cmd->bleprm.adv_int_max = params;
+
+        ret = string_to_uint(tok->arg[2], &params);  //adding passive and active scan parametes;
+        if(ret)
+            return -CMD_ERR_INV_PARAMS; 
+        cmd->bleprm.adv_type = (u8)params;
 
 		if(cmd->bleprm.adv_int_min < 0x0004 || cmd->bleprm.adv_int_min > 0x4000)
 			return -CMD_ERR_INV_PARAMS;
@@ -6658,6 +9344,8 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
 			return -CMD_ERR_INV_PARAMS;
 		if(cmd->bleprm.adv_int_min > cmd->bleprm.adv_int_max)
 			return -CMD_ERR_INV_PARAMS;
+        if(cmd->bleprm.adv_type > 1)
+            return -CMD_ERR_INV_PARAMS;
     }
 #endif
     else if((strcmp("NIP", at_name) == 0)
@@ -7153,7 +9841,7 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         if (tls_get_fwup_mode())
         {
             cmd->updd.size = (u16)datasize;
-            cmd->updd.data[0] = 0;/* ��ʶ��atָ�� */
+            cmd->updd.data[0] = 0;/* æ è¯æ¯atæä»¤ */
             if(tok->cmd_mode == CMD_MODE_UART1_ATCMD)
             {
                 callback = tls_cmd_get_set_uart1_mode();
@@ -7301,7 +9989,7 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
     else if (strcmp("TXIQ", at_name) == 0)
     {
     	int ret = 0;
-	u32 value = 0;
+    	u32 value = 0;
 
         if (tok->arg_found == 2){    
     	    ret = hexstr_to_unit(tok->arg[0],  &value);
@@ -7322,30 +10010,15 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
     else if (strcmp("FREQ", at_name) == 0)
     {
     	int ret = 0;
-	int value = 0;
+    	int value = 0;
 
         if (tok->arg_found == 1){   
-	    ret = strtodec(&value, tok->arg[0]);
-	    if (ret)
-	    {
-		    return -CMD_ERR_INV_PARAMS;
-	    }
-	    cmd->FreqErr.freqerr = value;
-        	}
-    }
-    else if (strcmp("VCG", at_name) == 0)
-    {
-        int ret = 0;
-        int value = 0;
-        
-        if (tok->arg_found == 1)
-        {	
-            ret = strtodec(&value, tok->arg[0]);
-            if (ret)
-            {
-                return -CMD_ERR_INV_PARAMS;
-            }
-            cmd->vcgCtrl.vcg = value;
+		    ret = strtodec(&value, tok->arg[0]);
+		    if (ret)
+		    {
+			    return -CMD_ERR_INV_PARAMS;
+		    }
+		    cmd->FreqErr.freqerr = value;
         }
     }
    else if(strcmp("&SPIF", at_name) == 0){
@@ -7384,7 +10057,7 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         int ret;
         if((tok->arg_found < 5) || (tok->arg_found > 8))
             return -CMD_ERR_INV_PARAMS;
-        ret = hexstr_to_unit(tok->arg[0], (u32 *)&cmd->lptstr.channel);/*Channel is not used*/
+        ret = hexstr_to_unit(tok->arg[0], (u32 *)&cmd->lptstr.tempcomp);
         if(ret)
             return -CMD_ERR_INV_PARAMS;
         ret = hexstr_to_unit(tok->arg[1], (u32 *)&cmd->lptstr.packetcount);
@@ -7453,7 +10126,6 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
         int ret;
         if (tok->arg_found != 7) 
             return -CMD_ERR_INV_PARAMS;
-        cmd->lptstr.channel = 1;
         cmd->lptstr.packetcount = 0;
         ret = hexstr_to_unit(tok->arg[0], (u32 *)&cmd->lptstr.psdulen);
         if(ret)
@@ -7521,7 +10193,17 @@ int at_parse_func(char *at_name, struct tls_atcmd_token_t *tok, union HOSTIF_CMD
 			if(ret)
 			   return -CMD_ERR_INV_PARAMS;
 		}
-	}	
+	}
+	else if (strcmp("&CALFIN", at_name) == 0)
+	{
+		int ret;
+		if (tok->arg_found)
+        {	
+			ret = strtodec(&cmd->calfin.val, tok->arg[0]);
+			if(ret || ((cmd->calfin.val != 1) && (cmd->calfin.val != 0)))
+			   return -CMD_ERR_INV_PARAMS;
+		}
+	}
 #if TLS_CONFIG_WIFI_PERF_TEST
     else if(strcmp("THT", at_name) == 0){	
 		cmd->tht.tok = (u32 *)tok;
@@ -7627,15 +10309,26 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
         (strcmp("WLEAV", at_name) == 0) || (strcmp("AOLM", at_name) == 0) || (strcmp("DDNS", at_name) == 0) ||
         (strcmp("UPNP", at_name) == 0) || (strcmp("DNAME", at_name) == 0) || (strcmp("&DBG", at_name) == 0) ||
         (strcmp("&UPDP", at_name) == 0) || (strcmp("STDBY", at_name) == 0)
-#if TLS_CONFIG_BT
-	    || (strcmp("BTCTRLEN", at_name) == 0) || (strcmp("BTCTRLDES", at_name) == 0) || (strcmp("BTSLEEP", at_name) == 0)
-	    || (strcmp("BLETPS", at_name) == 0) || (strcmp("BTSCOPATH", at_name) == 0)
-	    || (strcmp("BTTEST", at_name) == 0)
-	    || (strcmp("BLEADV", at_name) == 0) || (strcmp("BLEADATA", at_name) == 0)
+#if (WM_BLE_INCLUDED == CFG_ON || WM_BT_INCLUDED == CFG_ON || WM_NIMBLE_INCLUDED == CFG_ON)
+	    || (strcmp("BTSLEEP", at_name) == 0)
+	    || (strcmp("BLETPS", at_name) == 0) || (strcmp("BLESSCM", at_name) == 0)|| (strcmp("BLEUDS", at_name) == 0)|| (strcmp("BLEUSND", at_name) == 0)
+	    || (strcmp("BTTEST", at_name) == 0)|| (strcmp("BLEDS", at_name) == 0)|| (strcmp("BLEDC", at_name) == 0) || (strcmp("BLEUM", at_name) == 0)
+	    || (strcmp("BLEADV", at_name) == 0) || (strcmp("BLEADATA", at_name) == 0) || (strcmp("BLESCRSP", at_name) == 0)
 	    || (strcmp("BLESCPRM", at_name) == 0) || (strcmp("BLESFLT", at_name) == 0) || (strcmp("BLESCAN", at_name) == 0)
+	    || (strcmp("BTAVS", at_name) == 0)|| (strcmp("BTHFP", at_name) == 0)|| (strcmp("BTSPPS", at_name) == 0)|| (strcmp("BTSPPC", at_name) == 0)
+	    || (strcmp("BTSCM", at_name) == 0) || (strcmp("BLEDMADV", at_name) == 0) || (strcmp("BLEDMSCAN", at_name) == 0) || (strcmp("BTRF", at_name) == 0)
+        ||(strcmp("BTINQUIRY", at_name) == 0)|| (strcmp("BLEDCMC", at_name) == 0)|| (strcmp("BLEHIDS", at_name) == 0)|| (strcmp("BLEHIDU", at_name) == 0)
+#if (WM_MESH_INCLUDED == CFG_ON)
+        ||(strcmp("MSSCANPD", at_name) == 0)||(strcmp("MSSCANND", at_name) == 0)
+        ||(strcmp("MSRST", at_name) == 0)||(strcmp("MSOOBNUM", at_name) == 0)||(strcmp("MSWRADDR", at_name) == 0) ||(strcmp("MSWRTTL", at_name) == 0)
+        ||(strcmp("MSOOBSTR", at_name) == 0)||(strcmp("MSCLRRPL", at_name) == 0) || (strcmp("MSVNDSND", at_name) == 0)|| (strcmp("MSUART", at_name) == 0)  
+#endif
 #endif
         ){
         *res_len = atcmd_ok_resp(res_resp);
+    }else if(strcmp("MSPROVAD", at_name) == 0)
+    {
+        *res_len = 0;
     }else if (strcmp("WJOIN", at_name) == 0) {
 		int len=0,i=0;
 	    len = sprintf(res_resp, "+OK=%02x%02x%02x%02x%02x%02x,%d,%d,%d,\"",
@@ -7646,7 +10339,7 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
 	    for (i = 0; i < cmdrsp->join.ssid_len; i++)
 	        sprintf(res_resp+len+i, "%c", cmdrsp->join.ssid[i]);
 	    *res_len = len + cmdrsp->join.ssid_len;
-	    len = sprintf(res_resp+len + cmdrsp->join.ssid_len, "\",%u", cmdrsp->join.rssi);
+	    len = sprintf(res_resp+len + cmdrsp->join.ssid_len, "\",%d", (signed char)cmdrsp->join.rssi);
 	    *res_len += len;
     }else if (strcmp("WSCAN", at_name) == 0) {
 		*res_len = 0;
@@ -7689,10 +10382,7 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
 #if TLS_CONFIG_AP
 	    ||(strcmp("APENCRY", at_name) == 0)
 #endif
-#if TLS_CONFIG_BT
-	    || (strcmp("BTCTRLGS", at_name) == 0) || (strcmp("BLETPG", at_name) == 0)
-#endif
-             ){
+    ){
         if (set_opt) {
 			*res_len = atcmd_ok_resp(res_resp);
 		}else{
@@ -7771,7 +10461,16 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
 	        *res_len = sprintf(res_resp, "+OK=%04x", cmdrsp->channel_list.channellist);
 		}
     }
-#if TLS_CONFIG_BT
+#if (WM_BLE_INCLUDED == CFG_ON || WM_BT_INCLUDED == CFG_ON || WM_NIMBLE_INCLUDED == CFG_ON)
+
+    if((strcmp("BTCTRLGS", at_name) == 0) || (strcmp("BLETPG", at_name) == 0)){
+        if (set_opt) {
+            *res_len = atcmd_ok_resp(res_resp);
+        }else{
+            *res_len = sprintf(res_resp, "+OK=%hu", cmdrsp->bt.status);
+        }
+     }
+
     else if (strcmp("BTTXPOW", at_name) == 0)
     {
         if (set_opt) {
@@ -7780,18 +10479,97 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
         else {
             *res_len = sprintf(res_resp, "+OK=%hhd,%hhd", cmdrsp->blepow.min, cmdrsp->blepow.max);
     	}
+    }else if(strcmp("&BTMAC", at_name) == 0){
+        if(set_opt)
+            *res_len = atcmd_ok_resp(res_resp);
+        else
+            *res_len = sprintf(res_resp, "+OK=%02x%02x%02x%02x%02x%02x", 
+                cmdrsp->mac.addr[0], cmdrsp->mac.addr[1], cmdrsp->mac.addr[2], 
+                cmdrsp->mac.addr[3], cmdrsp->mac.addr[4], cmdrsp->mac.addr[5]); 
     }
+ #if (WM_NIMBLE_INCLUDED == CFG_ON)   
+     else if (strcmp("BTEN", at_name) == 0|| strcmp("BTDES", at_name) == 0 )
+     {
+         *res_len = atcmd_ok_resp(res_resp);
+     }
+     else if(strcmp("&BTNAME", at_name) == 0){
+        if(set_opt)
+            *res_len = atcmd_ok_resp(res_resp);
+        else
+            *res_len = sprintf(res_resp, "+OK=%s", cmdrsp->btname.name); 
+    }
+#if (WM_MESH_INCLUDED == CFG_ON)
+    else if( 
+        strcmp("MSSUBADD", at_name) == 0 || strcmp("MSSUBDEL", at_name) == 0 || strcmp("MSPUBSET", at_name) == 0 || strcmp("MSLVLGET", at_name) == 0 
+        || strcmp("MSLVLSET", at_name) == 0 || strcmp("MSRDADDR", at_name) == 0 || strcmp("MSHBPUBSET", at_name) == 0 || strcmp("MSHBSUBSET", at_name) == 0
+        || strcmp("MSSUBGET", at_name) == 0 ||strcmp("MSNODEDM", at_name) == 0 ||strcmp("MSONOFFPUB", at_name) == 0 ||strcmp("MSERASE", at_name) == 0
+        ||strcmp("MSADDRAKEY", at_name) == 0 ||strcmp("MSBNDAKEY", at_name) == 0||strcmp("MSADDLAKEY", at_name) == 0
+        ||strcmp("MSUBNDAKEY", at_name) == 0 ||strcmp("MSNODEEN", at_name) == 0||strcmp("MSPROVEN", at_name) == 0
+        )
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu", cmdrsp->bt.status);
+    }else if(strcmp("MSHBSUBGET", at_name) == 0 )
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu,%04x,%04x,%02x,%02x,%02x,%02x",cmdrsp->mesh_hb_sub.status,cmdrsp->mesh_hb_sub.src, cmdrsp->mesh_hb_sub.dst,
+                    cmdrsp->mesh_hb_sub.period, cmdrsp->mesh_hb_sub.count, cmdrsp->mesh_hb_sub.min, cmdrsp->mesh_hb_sub.max);
+    } if(strcmp("MSHBPUBGET", at_name) == 0 )
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu,%04x,%02x,%02x,%02x,%04x,%04x",cmdrsp->mesh_hb_pub.status,cmdrsp->mesh_hb_pub.dst, cmdrsp->mesh_hb_pub.count,
+                    cmdrsp->mesh_hb_pub.period, cmdrsp->mesh_hb_pub.ttl, cmdrsp->mesh_hb_pub.feat, cmdrsp->mesh_hb_pub.net_idx);
+    }else if(strcmp("MSPUBGET", at_name) == 0 )
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu,%04x,%04x,%02x,%02x,%02x,%02x,%02x",cmdrsp->mesh_pub.status,cmdrsp->mesh_pub.addr, cmdrsp->mesh_pub.app_idx,
+                    cmdrsp->mesh_pub.cred_flag, cmdrsp->mesh_pub.ttl, cmdrsp->mesh_pub.period, TLS_BT_MESH_PUB_TRANSMIT_COUNT(cmdrsp->mesh_pub.transmit),TLS_BT_MESH_PUB_TRANSMIT_COUNT(cmdrsp->mesh_pub.transmit));
+    }else if(strcmp("MSRDCFG", at_name) == 0 )
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x",cmdrsp->mesh_primary_cfg.status,cmdrsp->mesh_primary_cfg.net_transmit_count,cmdrsp->mesh_primary_cfg.net_transmit_intvl,
+                    cmdrsp->mesh_primary_cfg.relay,cmdrsp->mesh_primary_cfg.relay_retransmit_count, cmdrsp->mesh_primary_cfg.relay_retransmit_intvl,cmdrsp->mesh_primary_cfg.beacon,
+                    cmdrsp->mesh_primary_cfg.gatt_proxy, cmdrsp->mesh_primary_cfg.frnd, cmdrsp->mesh_primary_cfg.default_ttl);
+    }else if(strcmp("MSSUBGET", at_name) == 0 )
+    {
+        int index = 0;
+        int buf_offset = 0;
+
+        buf_offset = sprintf(res_resp, "+OK=%hu,", cmdrsp->mesh_sub.status);
+
+        for(index = 0; index<cmdrsp->mesh_sub.sub_cnt; index++)
+        {
+            buf_offset += sprintf(res_resp+buf_offset, ",%04x", cmdrsp->mesh_sub.subs[index]);
+        }
+                
+        *res_len = buf_offset;
+    }else if(strcmp("MSGETCPD", at_name) == 0)
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu,%s", cmdrsp->comp_data.status, cmdrsp->comp_data.data);
+    }else if(strcmp("MSRELAYSET", at_name) == 0 || strcmp("MSRELAYGET", at_name) == 0 )
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu,%hu,%hu", cmdrsp->mesh_relay.status, cmdrsp->mesh_relay.count, cmdrsp->mesh_relay.interval);
+    }else if(strcmp("MSPROXYSET", at_name) == 0 || strcmp("MSPROXYGET", at_name) == 0|| strcmp("MSFRDSET", at_name) == 0 || strcmp("MSFRDGET", at_name) == 0
+        ||strcmp("MSONOFFSET", at_name) == 0 || strcmp("MSONOFFGET", at_name) == 0 )
+    {
+        *res_len = sprintf(res_resp, "+OK=%hu,%hu", cmdrsp->mesh_resp.status, cmdrsp->mesh_resp.state);
+    }
+#endif
+
+ #else
     else if (strcmp("BLECTSV", at_name) == 0 || strcmp("BLECCT", at_name) == 0|| strcmp("BTEN", at_name) == 0
-		|| strcmp("BTDES", at_name) == 0 || (strcmp("BTCFGHOST", at_name) == 0) || (strcmp("BLEADDSC", at_name) == 0) 
+		|| strcmp("BTDES", at_name) == 0  || (strcmp("BLEADDSC", at_name) == 0) 
 		|| (strcmp("BLEADDCH", at_name) == 0) || (strcmp("BLEADESC", at_name) == 0) ||(strcmp("BLESTTSC", at_name) == 0) 
 		|| (strcmp("BLESTPSC", at_name) == 0) || (strcmp("BLEDELSC", at_name) == 0)|| (strcmp("BLEDESSV", at_name) == 0) 
 		|| (strcmp("BLESVDIS", at_name) == 0) || (strcmp("BLESIND", at_name) == 0)||(strcmp("BLECMTU", at_name) == 0)
 	    || (strcmp("BLESRSP", at_name) == 0) ||(strcmp("BLECDIS", at_name) == 0) ||(strcmp("BLESCONN", at_name) == 0)
 	    || (strcmp("BLECSSC", at_name) == 0) || (strcmp("BLECRNTY", at_name) == 0) || (strcmp("BLECDNTY", at_name) == 0)
 	    || (strcmp("BLECGDB", at_name) == 0) || (strcmp("BLECCONN", at_name) == 0)||(strcmp("BLECACH", at_name) == 0)
-	    ||(strcmp("BLECDES", at_name) == 0))
+	    ||(strcmp("BLECDES", at_name) == 0) 
+	    || (strcmp("BLERDRSSI", at_name) == 0) || (strcmp("&BTNAME", at_name) == 0)
+	    )
     {
 		*res_len = 0;
+    }
+ #endif   
+    else if((strcmp("BTDIAL", at_name) == 0))
+    {
+        *res_len = atcmd_ok_resp(res_resp);
     }
     else if (strcmp("BLEAPRM", at_name) == 0)
     {
@@ -7904,7 +10682,13 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
         struct hostif_cmdrsp_skstt_ext *ext;
 	    int i=0;
 	    u32 buflen;
-	    struct tls_uart_circ_buf * precvmit = NULL;
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR		
+		u32 cpu_sr = 0;
+	    struct tls_uart_net_msg * precvmit = NULL;
+		struct tls_uart_net_buf *uartnetbuf = NULL;
+#else
+	    struct tls_uart_circ_buf * precvmit = NULL;		
+#endif		
 	    if (set_opt) {
 			*res_len = sprintf(res_resp, "+OK=");
 	        ext = &cmdrsp->skstt.ext[0];
@@ -7914,7 +10698,25 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
 	            if(precvmit == NULL)
 	                buflen = 0;
 	            else
-	                buflen = CIRC_CNT(precvmit->head, precvmit->tail, TLS_SOCKET_RECV_BUF_SIZE);
+	            {
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR				
+	            	buflen = 0;
+					cpu_sr = tls_os_set_critical();
+					if (!dl_list_empty(&precvmit->tx_msg_pending_list))
+					{
+						dl_list_for_each(uartnetbuf,&precvmit->tx_msg_pending_list, struct tls_uart_net_buf,list)
+						{					
+							if (uartnetbuf->buf)
+							{
+								buflen += uartnetbuf->buflen - uartnetbuf->offset;
+							}
+						}
+					}
+					tls_os_release_critical(cpu_sr);
+#else
+					buflen = CIRC_CNT(precvmit->head, precvmit->tail, TLS_SOCKET_RECV_BUF_SIZE);
+#endif					
+	            }				
 	            *res_len += sprintf(res_resp + (*res_len), 
 	                    "%d,%d,\"%d.%d.%d.%d\",%d,%d,%d\r\n",
 	                ext->socket, ext->status, 
@@ -7931,10 +10733,90 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
         int ret = 0;
 	    u32 maxsize=0;
 	    u8 socket;
-	    struct tls_uart_circ_buf * precvmit;
+	   
 	    if (set_opt) {
 	        maxsize = cmdrsp->skrcv.size;
 	        socket = cmdrsp->skrcv.socket;
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR	
+			struct tls_uart_net_msg * precvmit;
+			struct tls_uart_net_buf *uartnetbuf;
+
+
+			u32 cpu_sr = 0;
+			int copylen = 0;
+			int remainlen = 0;
+
+			precvmit = tls_hostif_get_recvmit(socket);
+			if(precvmit)
+			{
+				ret = 0;
+				cpu_sr = tls_os_set_critical();
+				if (!dl_list_empty(&precvmit->tx_msg_pending_list))
+				{
+					dl_list_for_each(uartnetbuf,&precvmit->tx_msg_pending_list, struct tls_uart_net_buf,list)
+					{
+						if (uartnetbuf->buf)
+						{
+							ret += uartnetbuf->buflen - uartnetbuf->offset;
+						}
+					}
+				}
+				tls_os_release_critical(cpu_sr);
+				/*total buf len*/
+				if(ret < maxsize)
+					maxsize = ret;
+			}	
+			else{
+				return -CMD_ERR_INV_PARAMS;
+			}
+			*res_len = sprintf(res_resp, "+OK=%d\r\n\r\n", maxsize);
+			copylen = 0;
+			remainlen = maxsize;
+		    cpu_sr = tls_os_set_critical();
+			while (!dl_list_empty(&precvmit->tx_msg_pending_list)) {
+				uartnetbuf= dl_list_first(&precvmit->tx_msg_pending_list, struct tls_uart_net_buf, list);
+				tls_os_release_critical(cpu_sr);
+				if (uartnetbuf->buf == NULL) {
+					cpu_sr = tls_os_set_critical();
+					break;
+				}
+
+				if (remainlen <= (uartnetbuf->buflen - uartnetbuf->offset))
+				{
+					copylen = remainlen;
+					memcpy(res_resp + *res_len, uartnetbuf->buf + uartnetbuf->offset, remainlen);
+					remainlen = 0;
+				}
+				else
+				{
+					copylen = (uartnetbuf->buflen - uartnetbuf->offset);
+					memcpy(res_resp + *res_len, uartnetbuf->buf + uartnetbuf->offset, copylen);
+					remainlen -= (uartnetbuf->buflen - uartnetbuf->offset);
+				}
+
+				uartnetbuf->offset += copylen;	
+
+				if (uartnetbuf->offset == uartnetbuf->buflen)
+				{
+					cpu_sr = tls_os_set_critical();
+					dl_list_del(&uartnetbuf->list);
+					tls_os_release_critical(cpu_sr);
+					pbuf_free((struct pbuf *)uartnetbuf->pbuf);
+					uartnetbuf->buf = NULL;
+					uartnetbuf->buflen = 0;
+					uartnetbuf->offset = 0;
+					tls_mem_free(uartnetbuf);						
+				}
+				*res_len += copylen;
+				cpu_sr = tls_os_set_critical();
+				if (remainlen == 0)
+				{
+					break;
+				}
+			}
+		    tls_os_release_critical(cpu_sr);	
+#else
+		    struct tls_uart_circ_buf * precvmit;
 	        precvmit = tls_hostif_get_recvmit(socket);
 			if(precvmit)
 			{
@@ -7961,10 +10843,14 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
 				memcpy(res_resp + *res_len,(char *)(precvmit->buf+precvmit->tail),ret);
 				*res_len += ret;
 				precvmit->tail = (precvmit->tail + ret) & (TLS_SOCKET_RECV_BUF_SIZE - 1);
-				maxsize -= ret;
-				if(maxsize <= 0)
+				if (maxsize > ret)
+				{
+					maxsize -= ret;
+				}
+				else
 					break;
 			}
+#endif			
 			res_resp[*res_len] = '\0';
 	        return -CMD_ERR_SKT_RPT;
 	    }
@@ -8129,28 +11015,32 @@ int at_format_func(char *at_name, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
         if(set_opt)
             *res_len = atcmd_ok_resp(res_resp);
         else
-	        *res_len = sprintf(res_resp, "+OK =%08x", cmdrsp->txLO.txlo);
+	        *res_len = sprintf(res_resp, "+OK=%08x", cmdrsp->txLO.txlo);
     }
     else if (strcmp("TXIQ", at_name) == 0)
     {
         if(set_opt)
             *res_len = atcmd_ok_resp(res_resp);
         else
-	        *res_len = sprintf(res_resp, "+OK =%08x,%08x", cmdrsp->txIQ.txiqgain, cmdrsp->txIQ.txiqphase);
+	        *res_len = sprintf(res_resp, "+OK=%08x,%08x", cmdrsp->txIQ.txiqgain, cmdrsp->txIQ.txiqphase);
     }
     else if (strcmp("FREQ", at_name) == 0)
     {
         if(set_opt)
             *res_len = atcmd_ok_resp(res_resp);
         else
-	        *res_len = sprintf(res_resp, "+OK =%d", cmdrsp->FreqErr.freqerr);
+	        *res_len = sprintf(res_resp, "+OK=%d", cmdrsp->FreqErr.freqerr);
     }
-    else if (strcmp("VCG", at_name) == 0)
+    else if (strcmp("&CALFIN", at_name) == 0)
     {
-        if(set_opt)
-            *res_len = atcmd_ok_resp(res_resp);
-        else
-	    *res_len = sprintf(res_resp, "+OK =%d", cmdrsp->vcgCtrl.vcg);
+    	if (set_opt)
+    	{
+    		*res_len = atcmd_ok_resp(res_resp);
+    	}
+		else
+		{
+	    	*res_len = sprintf(res_resp, "+OK=%d", cmdrsp->calfin.val);
+		}
     }	
     else if(strcmp("&SPIF", at_name) == 0){
         if(cmdrsp->spif.mode==0)
@@ -8270,16 +11160,20 @@ int ri_parse_func(s16 ri_cmd_id, char *buf, u32 length, union HOSTIF_CMD_PARAMS_
         cmd->updm.src = 1;
     }
     else if(ri_cmd_id == HOSTIF_CMD_UPDD){
-        cmd->updd.data[0] = 1;/* ��ʶ��riָ�� */
+        cmd->updd.data[0] = 1;/* æ è¯æ¯riæä»¤ */
         //tls_set_hspi_fwup_mode(1);
     }
 #if TLS_CONFIG_RI_CMD
     else if(ri_cmd_id == HOSTIF_CMD_WSCAN || ri_cmd_id == HOSTIF_CMD_WJOIN){ 
         struct tls_hostif *hif = tls_get_hostif();
         if (hif->hostif_mode == HOSTIF_MODE_HSPI)
-            cmd->wscan.mode = CMD_MODE_HSPI_RICMD;
+            cmd->scanparam.mode = CMD_MODE_HSPI_RICMD;
         else
-            cmd->wscan.mode = CMD_MODE_UART1_RICMD;
+            cmd->scanparam.mode = CMD_MODE_UART1_RICMD;
+
+		cmd->scanparam.chlist = 0;
+		cmd->scanparam.scantimes = 0;
+		cmd->scanparam.switchinterval = 0;
     }
 #if TLS_CONFIG_SOCKET_RAW || TLS_CONFIG_SOCKET_STD
     else if(ri_cmd_id == HOSTIF_CMD_SKCT){
@@ -8576,7 +11470,14 @@ int ri_format_func(s16 ri_cmd_id, u8 set_opt, u8 update_flash, union HOSTIF_CMDR
 	){
         if(!set_opt)
             *res_len = sizeof(struct tls_hostif_cmd_hdr) + 3 + cmdrsp->key.key_len;
-    }else if(ri_cmd_id == HOSTIF_CMD_BSSID || ri_cmd_id == HOSTIF_CMD_UART || ri_cmd_id == HOSTIF_CMD_PASS){
+    }
+	else if (ri_cmd_id == HOSTIF_CMD_BSSID)
+	{
+        if(!set_opt){
+			*res_len = sizeof(struct tls_hostif_cmd_hdr) + 7;
+        }
+	}
+	else if(ri_cmd_id == HOSTIF_CMD_UART || ri_cmd_id == HOSTIF_CMD_PASS){
         if(!set_opt){
             u8 baud_rate[3];
             memcpy(baud_rate, cmdrsp->uart.baud_rate, 3);

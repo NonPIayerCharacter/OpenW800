@@ -20,13 +20,13 @@
 #include "wm_sockets.h"
 #include "lwip/inet.h"
 
-#include "wm_sockets2.0.3.h"
+#include "wm_sockets.h"
 #include "HTTPClientWrapper.h"
 
 #if DEMO_HTTPS
 
 #define HTTPS_DEMO_TASK_PRIO             38
-#define HTTPS_DEMO_TASK_SIZE             1024
+#define HTTPS_DEMO_TASK_SIZE             2048 //1024
 #define HTTPS_DEMO_QUEUE_SIZE            4
 
 #define HTTPS_RECV_BUF_LEN_MAX           1024
@@ -42,7 +42,7 @@ static tls_os_queue_t *https_demo_task_queue = NULL;
 
 static const char *https_request = "GET /legal/html/zh-cn/index.html HTTP/1.0\r\n"
                                    "Host: "HTTPS_DEMO_SERVER"\r\n"
-                                   "User-Agent: W60X\r\n"
+                                   "User-Agent: W80X\r\n"
                                    "\r\n";
 
 extern struct netif *tls_get_netif(void);

@@ -13,11 +13,14 @@
 #include <string.h>
 #include "wm_include.h"
 #include "wm_watchdog.h"
+#include "wm_config.h"
+#include "wm_ram_config.h"
 
 /*****************************************************************
 	EXTERN FUNC
 *****************************************************************/
 extern int demo_connect_net(void *, ...);
+extern int demo_connect_net_with_specific_info(void *, ...);
 extern int demo_socket_client(void *, ...);
 extern int demo_socket_server(void *, ...);
 extern int demo_oneshot(void *, ...);
@@ -59,7 +62,11 @@ extern int http_put_demo(void *, ...);
 extern int socket_server_demo(void *, ...);
 extern int sck_s_send_data_demo(void *, ...);
 extern int CreateMCastDemoTask(void *, ...);
-extern int adc_demo(void *, ...);
+extern int adc_input_voltage_demo(void *, ...);
+extern int adc_chip_temperature_demo(void*,...);
+extern int adc_power_voltage_demo(void *, ...);
+extern int adc_input_voltage_cal_demo(void *, ...);
+extern int adc_input_voltage_multipoint_cal_demo(void *, ...);
 extern int sd_card_test(void *, ...);
 
 extern int demo_wps_pbc(void *, ...);
@@ -70,15 +77,52 @@ extern int demo_wps_get_pin(void *, ...);
 extern int demo_iperf_auto_test(void *, ...);
 extern int CreateSSLServerDemoTask(void *, ...);
 extern int lwsDemoTest(void *, ...);
-extern int tls_i2s_io_init(void);
+extern int tls_i2s_io_init(void *, ...);
 extern int tls_i2s_demo(void *, ...);
 extern int i2c_demo(void *, ...);
 extern int scan_demo(void *, ...);
-
+extern int scan_format2_demo(void *, ...);
+extern int scan_specified_demo(void *, ...);
 extern int https_demo(void *, ...);
 extern int mqtt_demo(void *, ...);
 extern int fatfs_test(void *, ...);
 extern int mbedtls_demo(void *, ...);
+
+extern int dsp_demo(void *,...);
+
+#if (TLS_CONFIG_BLE == CFG_ON)
+extern int demo_ble_config(void *, ...); /*wifi connection by ble configuration*/
+#endif
+
+
+
+#if DEMO_BT
+extern int demo_bt_enable(void *, ...);
+extern int demo_bt_destroy(void *, ...);
+#if (TLS_CONFIG_BLE == CFG_ON)
+extern int demo_ble_server_on(void *, ...);
+extern int demo_ble_server_off(void *, ...);
+extern int demo_ble_client_on(void *, ...);
+extern int demo_ble_client_off(void *, ...);
+
+extern int demo_ble_scan(void *,...);
+extern int demo_ble_adv(void *,...);
+#endif
+
+#if (TLS_CONFIG_BR_EDR== CFG_ON)
+extern int demo_bt_app_on(void *, ...);
+extern int demo_bt_app_off(void *, ...);
+#endif
+
+#endif
+
+#if DEMO_TOUCHSENSOR
+extern int demo_touchsensor(void *, ...);
+#endif
+#if DEMO_LCD
+extern void lcd_test(void);
+#endif
+extern int avoid_copy_entry(void *, ...);
 
 /*****************************************************************
 		LOCAL FUNC
@@ -107,8 +151,8 @@ struct demo_console_info_t
     char *info;
 };
 
-#define DEMO_CONSOLE_CMD		1		//被解析成cmd
-#define DEMO_CONSOLE_SHORT_CMD	2		//CMD的一部分，没有解析完
+#define DEMO_CONSOLE_CMD		1		//琚В鏋愭垚cmd
+#define DEMO_CONSOLE_SHORT_CMD	2		//CMD鐨勪竴閮ㄥ垎锛屾病鏈夎В鏋愬畬
 #define DEMO_CONSOLE_WRONG_CMD  3
 
 #define DEMO_BUF_SIZE		TLS_UART_RX_BUF_SIZE
@@ -122,9 +166,13 @@ struct demo_console_info_t  console_tbl[] =
     //To Do When Add New Demo
 #if DEMO_CONNECT_NET
     {"t-connect", 	demo_connect_net, 0, 2, "Test connecting ap;t-connect(\"ssid\",\"pwd\"); For open ap, pwd should be empty"},
+    {"t-connect_ss", demo_connect_net_with_specific_info, 0x1C, 5, "Test connecting ap;t-connect_ss(\"ssid\",\"pwd\",timeout,pci_en,scan_mode); For open ap, pwd should be empty"},	
     {"t-oneshot",     demo_oneshot,  0, 0, "Test Oneshot  configuration"},
     //	{"t-socketcfg",  demo_socket_config, 0, 0, "Test socket configuration"},
     {"t-webcfg",      demo_webserver_config, 0, 0, "Test web server configuration"},
+#if (TLS_CONFIG_BLE == CFG_ON) 
+	{"t-blecfg",      demo_ble_config, 0, 0, "Test ble mode configuration"},
+#endif
 #endif
 
 #if DEMO_APSTA
@@ -144,6 +192,8 @@ struct demo_console_info_t  console_tbl[] =
 
 #if DEMO_SCAN
     {"t-scan",	scan_demo,	0x0,	0,  "Test wifi scan"},
+    {"t-scanf2", scan_format2_demo,	0x0,	0,  "Test wifi scan format2"},	
+	{"t-ss", scan_specified_demo, 0x3c, 6, "Test specified scan t-ss(\"ssid\",\"mac\",chan,scan_type,min_interval,max_interval)"},
 #endif
 
 /************************************************************************/
@@ -209,7 +259,11 @@ struct demo_console_info_t  console_tbl[] =
 #endif
 
 #if DEMO_ADC
-    {"t-adc",  adc_demo,   0x0,    0, "Test adc"},
+    {"t-adctemp",  adc_chip_temperature_demo,   0x0,    0, "(ADC)Test chip temperature"},
+    {"t-adcvolt",  adc_input_voltage_demo,   0x1,    1, "(ADC)Test input voltage,0-PA1(chan0), 1-PA4(chan1),8-different"},    
+	{"t-adcpower", adc_power_voltage_demo, 0x0, 0, "(ADC)Sample power supply voltage"},
+	{"t-adccal",   adc_input_voltage_cal_demo, 0x3, 2, "(ADC)Calibrate input voltage"},
+	{"t-adccalmp", adc_input_voltage_multipoint_cal_demo, 0x1F, 5, "(ADC) mulitpoint Calibrate t-adccalmp(chanbitmap,chan1ref,chan2ref,chan3ref,chan4ref),unit:mV"},
 #endif
 
 #if DEMO_7816
@@ -272,7 +326,7 @@ struct demo_console_info_t  console_tbl[] =
 #endif
 
 #if DEMO_MQTT
-    {"t-mqtt",	mqtt_demo,	0x0,	0,  "Test mqtt"},
+    {"t-mqtt",	mqtt_demo,	0x1,	1,  "Test mqtt: 0-TCP; 1-TLS; 2-WS; 3-WSS"},
 #endif
 
 #if DEMO_FATFS
@@ -283,11 +337,46 @@ struct demo_console_info_t  console_tbl[] =
 	{"t-iperf",  demo_iperf_auto_test,	 0x7E,	  7, "Iperf auto test"},
 #endif
 
-    //控制台上显示的最后一个命令，如果要让命令显示在控制台上，需要放在该行的上面
+#if DEMO_DSP
+	{"t-dsp",  dsp_demo,	 0x1,	  1, "DSP demo:0-fir,1-matrix,2-rfft,3-sin,4-variance"},
+#endif
+
+#if DEMO_BT
+    {"t-bt-on",	demo_bt_enable,	0x0,	0,                  "Test enable bt system"},
+    {"t-bt-off",	demo_bt_destroy,	0x0,	0,          "Test destroy bt system"},
+#if (TLS_CONFIG_BLE == CFG_ON)    
+    {"t-ble-server-on",	demo_ble_server_on,	0x0,	0,      "Test enable ble server"},
+    {"t-ble-server-off",	demo_ble_server_off,	0x0,	0,  "Test disable ble server"},
+    {"t-ble-client-on",	demo_ble_client_on,	0x0,	0,      "Test enable ble client"},
+    {"t-ble-client-off",	demo_ble_client_off,	0x0,	0,  "Test disable ble client"},
+    {"t-ble-adv", demo_ble_adv, 0x01, 1, "Test start connectable/unconnectable/stop ble advertisement,eg: t-ble-adv=(1/2/0)"},
+    {"t-ble-scan",demo_ble_scan, 0x01, 1, "Test start/stop ble scan,eg: t-ble-scan=(1/0)"},
+#endif  
+
+#if (TLS_CONFIG_BR_EDR == CFG_ON)    
+    {"t-bt-demo-on",	demo_bt_app_on,	0x0,	0,      "Test enable bt app on"},
+    {"t-bt-demo-off",	demo_bt_app_off,	0x0,	0,  "Test disable bt app off"},
+#endif 
+
+#endif
+
+#if DEMO_TOUCHSENSOR
+	{"t-touch", demo_touchsensor, 0x1, 1, "Test Touch sensor function,0:all, 1:touch sensor 1... 15:touch sensor 15"},
+#endif
+
+#if DEMO_LCD
+	{"t-lcd", (void *)lcd_test, 0, 0, "Test LCD output, eg: t-lcd"},
+#endif
+
+#if DEMO_AVOID_COPY
+	{"t-avoidcopy", avoid_copy_entry, 0x0, 0, "Test Avoid Copy function"},
+#endif
+
+    //鎺у埗鍙颁笂鏄剧ず鐨勬渶鍚庝竴涓懡浠わ紝濡傛灉瑕佽鍛戒护鏄剧ず鍦ㄦ帶鍒跺彴涓婏紝闇�瑕佹斁鍦ㄨ琛岀殑涓婇潰
     {"demohelp", 	demo_console_show_help,	0, 0,	"Display Help information"},
-    //下面的命令用于内部测试，不显示在控制台上
+    //涓嬮潰鐨勫懡浠ょ敤浜庡唴閮ㄦ祴璇曪紝涓嶆樉绀哄湪鎺у埗鍙颁笂
     {"reset", 		demo_sys_reset, 0, 0, "Reset System"},
-    //最后一个命令，检索命令时判断结束标识
+    //鏈�鍚庝竴涓懡浠わ紝妫�绱㈠懡浠ゆ椂鍒ゆ柇缁撴潫鏍囪瘑
     {"lastcmd", 	NULL,	0, 0,			"Table Terminal Flag; MUST BE THE LAST ONE"}
 };
 
@@ -339,6 +428,7 @@ static int demo_console_show_help(void *p, ...)
 
 int demo_sys_reset(void *p, ...)
 {
+	tls_sys_set_reboot_reason(REBOOT_REASON_ACTIVE);
     tls_sys_reset();
     return WM_SUCCESS;
 }

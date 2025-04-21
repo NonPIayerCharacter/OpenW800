@@ -22,13 +22,13 @@
  ******************************************************************************/
 MEMORY
 {
-	I-SRAM : ORIGIN = 0x080d0400 , LENGTH = 0x100000 /* I-SRAM  512KB */ 
-	D-SRAM : ORIGIN = 0x20000100 , LENGTH = 0x47f00   /* D-SRAM  288KB */
+	I-SRAM : ORIGIN = 0x080d0400 , LENGTH = 0x120000 /* I-SRAM  1M+128KB */ 
+	D-SRAM : ORIGIN = 0x20000100 , LENGTH = 0x47EFC   /* D-SRAM  288KB */
 	V-SRAM : ORIGIN = 0x20000000 , LENGTH = 0x100   /* off-chip SRAM 8MB */
 }
 
-__min_heap_size = 0x10000;
-PROVIDE (__ram_end  = 0x2003c000);
+__min_heap_size = 0x18000;
+PROVIDE (__ram_end  = 0x2003A000);
 PROVIDE (__heap_end = __ram_end);
 
 REGION_ALIAS("REGION_TEXT",    I-SRAM);
@@ -74,16 +74,20 @@ SECTIONS
   *(.rodata*)
   *(.rodata.*)
   *(.rodata.str1.4)
+  . = ALIGN(0x4) ;
+  __ctor_start__ = .;
   KEEP (*crtbegin.o(.ctors))
   KEEP (*crtbegin?.o(.ctors))
   KEEP (*(EXCLUDE_FILE (*crtend.o *crtend?.o ) .ctors))
   KEEP (*(SORT(.ctors.*)))
   KEEP (*(.ctors))
+  __ctor_end__ = .;
   KEEP (*crtbegin.o(.dtors))
   KEEP (*crtbegin?.o(.dtors))
   KEEP (*(EXCLUDE_FILE (*crtend.o *crtend?.o ) .dtors))
   KEEP (*(SORT(.dtors.*)))
   KEEP (*(.dtors))
+  __dtor_end__ = .;
   . = ALIGN(0x4) ;
   __erodata = .;
  } > REGION_RODATA

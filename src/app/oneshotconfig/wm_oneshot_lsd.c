@@ -1,5 +1,6 @@
 
 #include "wm_oneshot_lsd.h"
+#include "wm_mem.h"
 
 
 
@@ -37,24 +38,28 @@ lsd_printf_fn lsd_printf = NULL;
 
 static u8 *lsd_scan_bss;
 
+#define LSD_SRC_CNT   (3)
+
 const u8 lsd_dst_addr[3] = {0x01,0x00,0x5e};
-u8 lsd_last_num[2] = {0,0};
-u16 lsd_head[2][4] = {{0,0,0,0},{0,0,0,0}};
-u16 lsd_byte[2][4] = {{0,0,0,0},{0,0,0,0}};
-u8 lsd_state = 0;
-u16	lsd_data_datum = 0; 
-u8 lsd_head_cnt[2] = {0,0};
-u8 lsd_byte_cnt[2] = {0,0};
-u8 lsd_sync_cnt = 0;
-u8 lsd_src_mac[6] = {0};
-u8 lsd_data_cnt = 0;
-u16 lsd_last_seq[2] = {0,0};
-u16 lsd_last_len = 0;
-u8 lsd_temp_lock = 0;
+u8 lsd_last_num[LSD_SRC_CNT] = {0, 0, 0};
+u16 lsd_head[LSD_SRC_CNT][4] = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
+u16 lsd_byte[LSD_SRC_CNT][4] = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
+u8 lsd_state[LSD_SRC_CNT] = {0, 0, 0};
+u16	lsd_data_datum[LSD_SRC_CNT] = {0, 0, 0}; 
+u8 lsd_head_cnt[LSD_SRC_CNT] = {0, 0, 0};
+u8 lsd_head_bw20[LSD_SRC_CNT] = {0, 0, 0};
+u8 lsd_byte_cnt[LSD_SRC_CNT] = {0, 0, 0};
+u8 lsd_sync_cnt[LSD_SRC_CNT] = {0, 0, 0};
+u8 lsd_src_mac[LSD_SRC_CNT][6] = {{0}, {0}, {0}};
+u8 lsd_data_cnt[LSD_SRC_CNT] = {0, 0, 0};
+u16 lsd_last_seq[LSD_SRC_CNT] = {0, 0, 0};
+u16 lsd_last_len[LSD_SRC_CNT] = {0, 0, 0};
+u8 lsd_temp_lock[LSD_SRC_CNT] = {0, 0, 0};
+u8 lsd_lock_chan_cnt = 0;
 
 
-struct lsd_data_t lsd_data;
-struct lsd_param_t lsd_param;
+struct lsd_data_t *lsd_data = NULL;
+struct lsd_param_t *lsd_param = NULL;
 
 
 u8 lsd_crc_value = 0;
@@ -191,13 +196,28 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 	u16 guide_len;
 	u8 tods = 0;
 	u32 crcValue;
-
+	if (NULL == lsd_data || NULL == lsd_param)
+	{
+		return -1;
+	}
+	if(hdr->duration_id == 0)		//normal mode stbc 不处理
+	{
+		tods = 2;
+	}
+	else
+	{
+		if(1 == ieee80211_has_tods(hdr->frame_control))
+		{
+			tods = 1;
+		}
+		else
+		{
+			tods = 0;
+		}
+	}
 	multicast = ieee80211_get_DA(hdr);
 
-	if(0 == ieee80211_has_tods(hdr->frame_control))
-	{
-		return LSD_ONESHOT_CONTINUE;
-	}
+
 	//for LSD only tods
     if (ieee80211_is_data_qos(hdr->frame_control))
     {
@@ -208,15 +228,15 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 		frm_len = data_len;
 	}
 	
-	tods = ieee80211_has_tods(hdr->frame_control);
+	//tods = ieee80211_has_tods(hdr->frame_control);
 	SrcMac = ieee80211_get_SA(hdr);
 	
-	if(memcmp(multicast, lsd_dst_addr, 3))
+	if(memcmp(multicast, lsd_dst_addr, 3) && hdr->duration_id)
 	{
 		return LSD_ONESHOT_CONTINUE;
 	}
 
-	switch(lsd_state)
+	switch(lsd_state[tods])
 	{
 		case 0:
 			if ((frm_len < 60) || (frm_len > 86))
@@ -224,24 +244,26 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 				return LSD_ONESHOT_CONTINUE;
 			}
 					
-			if(is_zero_ether_addr(lsd_src_mac))
+			if(is_zero_ether_addr(lsd_src_mac[tods]))
 			{
-				memcpy(lsd_src_mac, SrcMac, 6);
-				lsd_head_cnt[0] = lsd_head_cnt[1] = 0;
-				lsd_sync_cnt = 0;
-				lsd_last_seq[0] = lsd_last_seq[1] = 0;
-				lsd_temp_lock = 0;
-				memset(lsd_head, 0, sizeof(lsd_head));
+				memcpy(lsd_src_mac[tods], SrcMac, 6);
+				lsd_head_cnt[tods] = 0;
+				lsd_head_bw20[tods] = 0;
+				lsd_sync_cnt[tods] = 0;
+				lsd_last_seq[tods] = 0;
+				lsd_temp_lock[tods] = 0;
+				memset(lsd_head[tods], 0, sizeof(lsd_head)/LSD_SRC_CNT);
 			}
 			else
 			{
-				if(memcmp(lsd_src_mac, SrcMac, 6))
+				if(memcmp(lsd_src_mac[tods], SrcMac, 6))
 				{
-					memcpy(lsd_src_mac, SrcMac, 6);
-					lsd_head_cnt[0] = lsd_head_cnt[1] = 0;
-					lsd_sync_cnt = 0;
-					lsd_last_seq[0] = lsd_last_seq[1] = 0;
-					memset(lsd_head, 0, sizeof(lsd_head));
+					memcpy(lsd_src_mac[tods], SrcMac, 6);
+					lsd_head_cnt[tods] = 0;
+					lsd_head_bw20[tods] = 0;
+					lsd_sync_cnt[tods] = 0;
+					lsd_last_seq[tods] = 0;
+					memset(lsd_head[tods], 0, sizeof(lsd_head)/LSD_SRC_CNT);
 				}else{
 					if(lsd_printf)
 						lsd_printf("tods:%d,%d,"MACSTR"\n", tods, frm_len, MAC2STR(SrcMac));
@@ -261,22 +283,27 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 				if(((lsd_head[tods][lsd_head_cnt[tods]]+1) != lsd_head[tods][lsd_head_cnt[tods]-1])
 					&& ((lsd_head[tods][lsd_head_cnt[tods]]-3) != lsd_head[tods][lsd_head_cnt[tods]-1]))
 				{
-					lsd_temp_lock = 0;
+					lsd_temp_lock[tods] = 0;
 					lsd_head_cnt[tods] = 0;
+					lsd_head_bw20[tods] = 0;
 					lsd_head[tods][0] = frm_len;
 				}else{				
-					lsd_temp_lock = 1;
+					lsd_temp_lock[tods] = 1;
 				}
 			}
 			lsd_head_cnt[tods] ++;
+			if(0 == (hdr->duration_id&0x01))
+			{
+				lsd_head_bw20[tods] ++;
+			}
 
 			if(lsd_head_cnt[tods] >= 4)
 			{
-				lsd_sync_cnt ++;
+				lsd_sync_cnt[tods] ++;
 				lsd_head_cnt[tods] = 0;
 			}
 	
-			if(lsd_sync_cnt >= 1)
+			if(lsd_sync_cnt[tods] >= 1)
 			{
 				guide_len = lsd_head[tods][0];		
 				for(i=1; i<=3; i++)
@@ -284,28 +311,48 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 					if(guide_len > lsd_head[tods][i])
 						guide_len = lsd_head[tods][i];								//取出同步头中最小值					
 				}
-				lsd_state = 1;														//同步完成, 锁定源MAC和信道
-				lsd_data_datum = guide_len - LSD_GUIDE_DATUM + LSD_DATA_OFFSET;		//获取到基准长度
+				lsd_state[tods] = 1;														//同步完成, 锁定源MAC和信道
+				lsd_data_datum[tods] = guide_len - LSD_GUIDE_DATUM + LSD_DATA_OFFSET;		//获取到基准长度
 				if(lsd_printf)
 					lsd_printf("lsd lock:%d\n", lsd_data_datum);	
-
-				printf("SRC MAC:%02X:%02X:%02X:%02X:%02X:%02X\n", 
-					lsd_src_mac[0],lsd_src_mac[1],lsd_src_mac[2],lsd_src_mac[3],lsd_src_mac[4],lsd_src_mac[5]);
-				return LSD_ONESHOT_CHAN_LOCKED;
+				if (lsd_printf)
+				lsd_printf("SRC MAC:%02X:%02X:%02X:%02X:%02X:%02X\n", 
+					lsd_src_mac[tods][0],lsd_src_mac[tods][1],lsd_src_mac[tods][2],lsd_src_mac[tods][3],lsd_src_mac[tods][4],lsd_src_mac[tods][5]);
+				if(lsd_head_bw20[tods] >= 4)
+				{
+					lsd_head_bw20[tods] = 0;
+					if (lsd_lock_chan_cnt == 1)
+					{
+						lsd_lock_chan_cnt = 2;
+						return LSD_ONESHOT_CHAN_LOCKED_BW20;
+					}
+				}
+				else
+				{
+					if (lsd_lock_chan_cnt == 1)
+					{
+						lsd_lock_chan_cnt = 2;
+						return LSD_ONESHOT_CHAN_LOCKED_BW40;
+					}
+				}
 			}
-			if(lsd_temp_lock == 1)
+			if(lsd_temp_lock[tods] == 1)
 			{
-				return LSD_ONESHOT_CHAN_TEMP_LOCKED;
+				if (lsd_lock_chan_cnt == 0)
+				{
+					lsd_lock_chan_cnt = 1;
+					return LSD_ONESHOT_CHAN_TEMP_LOCKED;
+				}
 			}
 			break;
 
 		case 1:
-			if((frm_len >= 1024) || (frm_len < lsd_data_datum))
+			if((frm_len >= 1024) || (frm_len < lsd_data_datum[tods]))
 			{
 				return LSD_ONESHOT_CONTINUE;
 			}
 
-			if(memcmp(lsd_src_mac, SrcMac, 6))
+			if(memcmp(lsd_src_mac[tods], SrcMac, 6))
 			{
 				return LSD_ONESHOT_CONTINUE;
 			}
@@ -323,7 +370,7 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 				lsd_last_num[tods] = multicast[5];
 			}
 
-			lsd_byte[tods][lsd_byte_cnt[tods]] = frm_len - lsd_data_datum;
+			lsd_byte[tods][lsd_byte_cnt[tods]] = frm_len - lsd_data_datum[tods];
 			if((lsd_byte_cnt[tods]==0) && (lsd_byte[tods][0]>=256))
 			{
 				lsd_byte_cnt[tods] = 0;
@@ -351,21 +398,23 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 				data_coding.crc = lsd_byte[tods][1]&0xFF;
 				data_coding.data2 = lsd_byte[tods][2]&0xFF;
 				data_coding.seq = lsd_byte[tods][3]&0xFF;
-				if(lsd_data.used[data_coding.seq<<1] == 0)
+				if(lsd_data->used[data_coding.seq<<1] == 0)
 				{
 					crcValue = lsd_crc8_calc((u8 *)&data_coding, 3);
 					if(data_coding.crc == (u8)crcValue)
 					{
 						if(lsd_printf)
-							lsd_printf("%d\n", data_coding.seq);
-						lsd_data.data[data_coding.seq<<1] = data_coding.data1;
-						lsd_data.used[data_coding.seq<<1] = 1;
-						lsd_data_cnt ++;
-						lsd_data.data[(data_coding.seq<<1)+1] = data_coding.data2;
-						lsd_data.used[(data_coding.seq<<1)+1] = 1;	
-						lsd_data_cnt ++;
-						if(lsd_data_cnt >= LSD_DATA_MAX)
+							lsd_printf("[%d]%d\n", tods, data_coding.seq);
+						lsd_data->data[data_coding.seq<<1] = data_coding.data1;
+						lsd_data->used[data_coding.seq<<1] = 1;
+						lsd_data_cnt[tods] ++;
+						lsd_data->data[(data_coding.seq<<1)+1] = data_coding.data2;
+						lsd_data->used[(data_coding.seq<<1)+1] = 1;	
+						lsd_data_cnt[tods] ++;
+						if(lsd_data_cnt[tods] >= LSD_DATA_MAX)
 						{
+							lsd_data_cnt[tods] = 0;
+							memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 							return LSD_ONESHOT_ERR;
 						}
 					}
@@ -373,121 +422,141 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 				lsd_byte_cnt[tods] = 0;
 			}
 
-			if(lsd_data.used[0] && lsd_data.used[1] && lsd_data.used[2])
+			if(lsd_data->used[0] && lsd_data->used[1] && lsd_data->used[2])
 			{
-				totalLen = lsd_data.data[0];
-				pwdLen = lsd_data.data[1];
-				ssidLen = lsd_data.data[2];
+				totalLen = lsd_data->data[0];
+				pwdLen = lsd_data->data[1];
+				ssidLen = lsd_data->data[2];
 				if((ssidLen > 32) || (pwdLen > 64))
 				{
+					lsd_data_cnt[tods] = 0;
+					memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 					return LSD_ONESHOT_ERR;
 				}
-				if((pwdLen==0) && (ssidLen==0) && (totalLen<=2))
+				if((pwdLen==0) && (ssidLen==0) && (totalLen<=2)) /*total len wrong*/
 				{
 					if(lsd_printf)
 						lsd_printf("totalLen:%d, ssidLen:%d, pwdLen:%d, err\n", totalLen, ssidLen, pwdLen);
-					memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
+
+					lsd_data_cnt[tods] = 0;
+					memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 					return LSD_ONESHOT_CONTINUE;					
 				}
 				else if((ssidLen>0) && (pwdLen>0))
 				{
-					if(totalLen < pwdLen + ssidLen + 5)
+					if(totalLen < pwdLen + ssidLen + 5) /*total len wrong*/
 					{
 						if(lsd_printf)
 							lsd_printf("totalLen:%d, ssidLen:%d, pwdLen:%d, err\n", totalLen, ssidLen, pwdLen);
-						memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
+
+						lsd_data_cnt[tods] = 0;
+						memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 						return LSD_ONESHOT_CONTINUE; 
 					}
 				}
 				else if((ssidLen>0) && (pwdLen==0))
 				{
-					if(totalLen < pwdLen + ssidLen + 4)
+					if(totalLen < pwdLen + ssidLen + 4)/*total len wrong*/
 					{
 						if(lsd_printf)
 							lsd_printf("totalLen:%d, ssidLen:%d, pwdLen:%d, err\n", totalLen, ssidLen, pwdLen);
-						memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
+
+						lsd_data_cnt[tods] = 0;
+						memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 						return LSD_ONESHOT_CONTINUE; 
 					}					
 				}
-				else if((ssidLen==0) && (pwdLen>0))
+				else if((ssidLen==0) && (pwdLen>0)) /*ssid len wrong*/
 				{
 					if(lsd_printf)
 						lsd_printf("ssidLen:%d, pwdLen:%d, err\n", ssidLen, pwdLen);
-					memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
+
+					lsd_data_cnt[tods] = 0;
+					memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 					return LSD_ONESHOT_CONTINUE;		
 				}
 				else if((ssidLen>32) || (pwdLen>64))
 				{
 					if(lsd_printf)
 						lsd_printf("ssidLen:%d, pwdLen:%d, err\n", ssidLen, pwdLen);
-					memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
+
+					lsd_data_cnt[tods] = 0;
+					memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 					return LSD_ONESHOT_CONTINUE;
 				}	
 				
-				if(lsd_data_cnt >= totalLen + 2)
+				if(lsd_data_cnt[tods] >= totalLen + 2)
 				{
 					if(lsd_printf)
 						lsd_printf("get all\n");
-					totalCrc = lsd_data.data[totalLen+1];
-					if(totalCrc != lsd_crc8_calc(&lsd_data.data[0], totalLen+1))
+					totalCrc = lsd_data->data[totalLen+1];
+					if(totalCrc != lsd_crc8_calc(&lsd_data->data[0], totalLen+1))
 					{
 						if(lsd_printf)
 							lsd_printf("totalCrc err\n");
-						memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
+
+						lsd_data_cnt[tods] = 0;
+						memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 						return LSD_ONESHOT_CONTINUE;
 					}
 				
 					if((ssidLen==0) && (pwdLen==0))				//only userData
 					{
-						lsd_param.ssid_len = 0;
-						lsd_param.pwd_len = 0;
-						lsd_param.user_len = totalLen - 2;
-						if(lsd_param.user_len > 128)
+						lsd_param->ssid_len = 0;
+						lsd_param->pwd_len = 0;
+						lsd_param->user_len = totalLen - 2;
+						if(lsd_param->user_len > 128)
 						{
+							lsd_data_cnt[tods] = 0;
+							memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 							return LSD_ONESHOT_ERR;
 						}
-						memcpy(lsd_param.user_data, &lsd_data.data[3], lsd_param.user_len);	
+						memcpy(lsd_param->user_data, &lsd_data->data[3], lsd_param->user_len);	
 						if(lsd_printf)
-							lsd_printf("user data:%s\n", lsd_param.user_data);
+							lsd_printf("user data:%s\n", lsd_param->user_data);
 						return LSD_ONESHOT_COMPLETE;
 					}
 											
-					bssidCrc = lsd_data.data[3];
+					bssidCrc = lsd_data->data[3];
 					if(pwdLen > 0)
 					{
-						memcpy(lsd_param.pwd, &lsd_data.data[4], pwdLen);
-						memcpy(lsd_param.ssid, &lsd_data.data[5+pwdLen], ssidLen);
-						ssidCrc = lsd_data.data[5+ssidLen+pwdLen];	
-						lsd_param.user_len = totalLen - pwdLen - ssidLen - 5;	
-						if(lsd_param.user_len > 128)
+						memcpy(&lsd_param->pwd, &lsd_data->data[4], pwdLen);
+						memcpy(&lsd_param->ssid, &lsd_data->data[5+pwdLen], ssidLen);
+						ssidCrc = lsd_data->data[5+ssidLen+pwdLen];	
+						lsd_param->user_len = totalLen - pwdLen - ssidLen - 5;	
+						if(lsd_param->user_len > 128)
 						{
+							lsd_data_cnt[tods] = 0;
+							memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 							return LSD_ONESHOT_ERR;
 						}
-						memcpy(lsd_param.user_data, &lsd_data.data[6+ssidLen+pwdLen], lsd_param.user_len);
+						memcpy(&lsd_param->user_data, &lsd_data->data[6+ssidLen+pwdLen], lsd_param->user_len);
 					}
 					else
 					{
-						memcpy(lsd_param.ssid, &lsd_data.data[4+pwdLen], ssidLen);
-						ssidCrc = lsd_data.data[4+ssidLen+pwdLen];
-						lsd_param.user_len = totalLen - ssidLen - 4;	
-						if(lsd_param.user_len > 128)
+						memcpy(lsd_param->ssid, &lsd_data->data[4+pwdLen], ssidLen);
+						ssidCrc = lsd_data->data[4+ssidLen+pwdLen];
+						lsd_param->user_len = totalLen - ssidLen - 4;	
+						if(lsd_param->user_len > 128)
 						{
+							lsd_data_cnt[tods] = 0;
+							memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
 							return LSD_ONESHOT_ERR;
 						}
-						memcpy(lsd_param.user_data, &lsd_data.data[5+ssidLen], lsd_param.user_len);
+						memcpy(lsd_param->user_data, &lsd_data->data[5+ssidLen], lsd_param->user_len);
 					}	
-					lsd_param.ssid_len = ssidLen;
-					lsd_param.pwd_len = pwdLen;
-					lsd_param.total_len = totalLen;
+					lsd_param->ssid_len = ssidLen;
+					lsd_param->pwd_len = pwdLen;
+					lsd_param->total_len = totalLen;
 					if(lsd_printf)
-						lsd_printf("user data:%s\n", lsd_param.user_data);
+						lsd_printf("user data:%s\n", lsd_param->user_data);
 					if(lsd_printf)
 						lsd_printf("ssidLen:%d, ssidCrc:%02X, bssidCrc:%02X\n", ssidLen, ssidCrc, bssidCrc);
-					lsd_ssid_bssid_crc_match(ssidCrc, bssidCrc, &ssidLen, lsd_param.ssid, lsd_param.bssid);
-					lsd_param.ssid_len = ssidLen;
+					lsd_ssid_bssid_crc_match(ssidCrc, bssidCrc, &ssidLen, lsd_param->ssid, lsd_param->bssid);
+					lsd_param->ssid_len = ssidLen;
 					if(lsd_printf)
-						lsd_printf("bssid:%02X%02X%02X%02X%02X%02X\n", lsd_param.bssid[0], lsd_param.bssid[1], lsd_param.bssid[2]
-						, lsd_param.bssid[3], lsd_param.bssid[4], lsd_param.bssid[5]);	
+						lsd_printf("bssid:%02X%02X%02X%02X%02X%02X\n", lsd_param->bssid[0], lsd_param->bssid[1], lsd_param->bssid[2]
+						, lsd_param->bssid[3], lsd_param->bssid[4], lsd_param->bssid[5]);	
 					return LSD_ONESHOT_COMPLETE;
 				}	//have no userData
 				else if(ssidLen > 0)
@@ -495,40 +564,40 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 					if(pwdLen > 0)
 					{
 						userLen = totalLen - pwdLen - ssidLen - 5;
-						if(0 == lsd_data.used[5+ssidLen+pwdLen])
+						if(0 == lsd_data->used[5+ssidLen+pwdLen])
 						{
 							return LSD_ONESHOT_CONTINUE;
 						}
-						ssidCrc = lsd_data.data[5+ssidLen+pwdLen];
+						ssidCrc = lsd_data->data[5+ssidLen+pwdLen];
 					}
 					else
 					{
 						userLen = totalLen - ssidLen - 4;
-						if(0 == lsd_data.used[4+ssidLen+pwdLen])
+						if(0 == lsd_data->used[4+ssidLen+pwdLen])
 						{
 							return LSD_ONESHOT_CONTINUE;
 						} 
-						ssidCrc = lsd_data.data[4+ssidLen+pwdLen];
+						ssidCrc = lsd_data->data[4+ssidLen+pwdLen];
 					}
 					if(userLen > 0)					//have userData, must recv all
 					{
 						return LSD_ONESHOT_CONTINUE;
 					}
-					if(lsd_data.used[3])			//bssidCrc
+					if(lsd_data->used[3])			//bssidCrc
 					{
-						bssidCrc = lsd_data.data[3];
+						bssidCrc = lsd_data->data[3];
 						if(pwdLen > 0)
 						{
-							if(0 == lsd_data.used[4+pwdLen])
+							if(0 == lsd_data->used[4+pwdLen])
 							{
 								return LSD_ONESHOT_CONTINUE;
 							}
-							pwdCrc = lsd_data.data[4+pwdLen];
+							pwdCrc = lsd_data->data[4+pwdLen];
 							for(i=0; i<pwdLen; i++)
 							{
-								if(lsd_data.used[4+i])
+								if(lsd_data->used[4+i])
 								{
-									lsd_param.pwd[i] = lsd_data.data[4+i];
+									lsd_param->pwd[i] = lsd_data->data[4+i];
 								}
 								else
 								{
@@ -539,23 +608,27 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 							{
 								return LSD_ONESHOT_CONTINUE;
 							}
-							if(pwdCrc != lsd_crc8_calc(&lsd_data.data[4], pwdLen))
+							if(pwdCrc != lsd_crc8_calc(&lsd_data->data[4], pwdLen))
 							{
 								if(lsd_printf)
 									lsd_printf("pwdCrc err\n");
-								memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
-								memset(lsd_param.pwd, 0, 65);
+								memset((u8 *)&lsd_data->data[4], 0, pwdLen);
+								memset((u8 *)&lsd_data->used[4], 0, pwdLen);
+								lsd_data->used[1] = 0;
+								lsd_data->data[1] = 0;
+								lsd_data_cnt[tods] = lsd_data_cnt[tods] - pwdLen;
+								memset(lsd_param->pwd, 0, 65);
 								return LSD_ONESHOT_CONTINUE;								
 							}
 						}
-						ret = lsd_ssid_bssid_crc_match(ssidCrc, bssidCrc, &ssidLen, lsd_param.ssid,  lsd_param.bssid);
+						ret = lsd_ssid_bssid_crc_match(ssidCrc, bssidCrc, &ssidLen, lsd_param->ssid,  lsd_param->bssid);
 						if(ret == 0)
 						{
 							if(lsd_printf)
 								lsd_printf("lsd_ssid_bssid_crc_match sucess\n");
-							lsd_param.ssid_len = ssidLen;
-							lsd_param.pwd_len = pwdLen;
-							lsd_param.total_len = totalLen;
+							lsd_param->ssid_len = ssidLen;
+							lsd_param->pwd_len = pwdLen;
+							lsd_param->total_len = totalLen;
 							return LSD_ONESHOT_COMPLETE;
 						}
 					}
@@ -568,44 +641,77 @@ int tls_lsd_recv(u8 *buf, u16 data_len)
 
 void tls_lsd_init(u8 *scanBss)
 {
-	memset((u8 *)&lsd_data, 0, sizeof(struct lsd_data_t));
+	if (NULL == lsd_data)
+	{
+		lsd_data = (struct lsd_data_t *)tls_mem_alloc(sizeof(struct lsd_data_t));
+		if (lsd_data)
+		{
+			memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
+		}
+		else
+		{
+			if(lsd_printf)
+				lsd_printf("lsd data malloc failed\n");
+		}
+	}
+	else
+	{
+		memset((u8 *)lsd_data, 0, sizeof(struct lsd_data_t));
+	}
+
+	if (NULL == lsd_param)
+	{
+		lsd_param = (struct lsd_param_t *)tls_mem_alloc(sizeof(struct lsd_param_t));
+		if (lsd_param)
+		{
+			memset((u8 *)lsd_param, 0, sizeof(struct lsd_param_t));
+		}
+		else
+		{
+			if(lsd_printf)
+				lsd_printf("lsd param malloc failed\n");
+		}
+	}
+	else
+	{
+		memset((u8 *)lsd_param, 0, sizeof(struct lsd_param_t));
+	}
+
+	
 	memset(lsd_head, 0, sizeof(lsd_head));
 	memset(lsd_byte, 0, sizeof(lsd_byte));
-	memset(lsd_src_mac, 0, 6);
-	memset(&lsd_param, 0, sizeof(struct lsd_param_t));
+	memset(lsd_src_mac, 0, sizeof(lsd_src_mac));
+
 	memset(lsd_last_num, 0, sizeof(lsd_last_num));
-	lsd_temp_lock = 0;
-	lsd_state = 0;
-	lsd_data_datum = 0; 
+	memset(lsd_temp_lock, 0, sizeof(lsd_temp_lock));
+	memset(lsd_state, 0, sizeof(lsd_state));
+	memset(lsd_data_datum, 0, sizeof(lsd_data_datum));
+	memset(lsd_head_bw20, 0, sizeof(lsd_head_bw20));
 	memset(lsd_head_cnt, 0, sizeof(lsd_head_cnt));
 	memset(lsd_byte_cnt, 0, sizeof(lsd_byte_cnt));
-	lsd_sync_cnt = 0;
-	lsd_data_cnt = 0;
+	memset(lsd_sync_cnt, 0, sizeof(lsd_sync_cnt));
+	memset(lsd_data_cnt, 0, sizeof(lsd_data_cnt));
 	memset(lsd_last_seq, 0, sizeof(lsd_last_seq));
 	lsd_scan_bss = scanBss;
+	lsd_lock_chan_cnt = 0;
 
 	if(lsd_printf)
 		lsd_printf("tls_lsd_init\n");
 }
 
 
+void tls_lsd_deinit(void)
+{
+	if (lsd_data)
+	{
+		tls_mem_free(lsd_data);
+		lsd_data = NULL;
+	}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	if (lsd_param)
+	{
+		tls_mem_free(lsd_param);
+		lsd_param = NULL;
+	}
+}
 

@@ -33,6 +33,8 @@ static void io_cfg_option1(enum tls_io_name name)
     tls_reg_write32(HR_GPIO_AF_SEL + offset, tls_reg_read32(HR_GPIO_AF_SEL + offset) | BIT(pin));  /* gpio function */
     tls_reg_write32(HR_GPIO_AF_S1  + offset, tls_reg_read32(HR_GPIO_AF_S1  + offset) & (~BIT(pin)));
     tls_reg_write32(HR_GPIO_AF_S0  + offset, tls_reg_read32(HR_GPIO_AF_S0  + offset) & (~BIT(pin)));
+	tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | (BIT(pin))); /*disable pullup*/
+	tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) & (~BIT(pin)));	/*disable pulldown*/
 }
 
 static void io_cfg_option2(enum tls_io_name name)
@@ -54,6 +56,8 @@ static void io_cfg_option2(enum tls_io_name name)
     tls_reg_write32(HR_GPIO_AF_SEL + offset, tls_reg_read32(HR_GPIO_AF_SEL + offset) | BIT(pin));  /* gpio function */
     tls_reg_write32(HR_GPIO_AF_S1  + offset, tls_reg_read32(HR_GPIO_AF_S1  + offset) & (~BIT(pin)));
     tls_reg_write32(HR_GPIO_AF_S0  + offset, tls_reg_read32(HR_GPIO_AF_S0  + offset) | BIT(pin));
+	tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | (BIT(pin))); /*disable pullup*/
+	tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) & (~BIT(pin)));	/*disable pulldown*/
 }
 
 static void io_cfg_option3(enum tls_io_name name)
@@ -75,6 +79,8 @@ static void io_cfg_option3(enum tls_io_name name)
     tls_reg_write32(HR_GPIO_AF_SEL + offset, tls_reg_read32(HR_GPIO_AF_SEL + offset) | BIT(pin));  /* gpio function */
     tls_reg_write32(HR_GPIO_AF_S1  + offset, tls_reg_read32(HR_GPIO_AF_S1  + offset) | BIT(pin));
     tls_reg_write32(HR_GPIO_AF_S0  + offset, tls_reg_read32(HR_GPIO_AF_S0  + offset) & (~BIT(pin)));
+	tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | (BIT(pin))); /*disable pullup*/
+	tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) & (~BIT(pin)));	/*disable pulldown*/
 }
 
 static void io_cfg_option4(enum tls_io_name name)
@@ -96,6 +102,8 @@ static void io_cfg_option4(enum tls_io_name name)
     tls_reg_write32(HR_GPIO_AF_SEL + offset, tls_reg_read32(HR_GPIO_AF_SEL + offset) | BIT(pin));  /* gpio function */
     tls_reg_write32(HR_GPIO_AF_S1  + offset, tls_reg_read32(HR_GPIO_AF_S1  + offset) | BIT(pin));
     tls_reg_write32(HR_GPIO_AF_S0  + offset, tls_reg_read32(HR_GPIO_AF_S0  + offset) | BIT(pin));
+	tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | (BIT(pin))); /*disable pullup*/
+	tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) & (~BIT(pin)));	/*disable pulldown*/
 }
 
 static void io_cfg_option5(enum tls_io_name name)
@@ -115,8 +123,12 @@ static void io_cfg_option5(enum tls_io_name name)
     }
 
     tls_reg_write32(HR_GPIO_AF_SEL + offset, tls_reg_read32(HR_GPIO_AF_SEL + offset) & (~BIT(pin)));  /* disable gpio function */
+	tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | (BIT(pin))); /*disable pullup*/
+	tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) & (~BIT(pin)));	/*disable pulldown*/
 }
 
+static u32 io_pa_option67 = 0;
+static u32 io_pb_option67 = 0;
 static void io_cfg_option6(enum tls_io_name name)
 {
     u8  pin;
@@ -126,17 +138,45 @@ static void io_cfg_option6(enum tls_io_name name)
     {
         pin    = name - WM_IO_PB_00;
         offset = TLS_IO_AB_OFFSET;
+		io_pb_option67  |= BIT(pin);
     }
     else
     {
         pin    = name;
         offset = 0;
+		io_pa_option67  |= BIT(pin);
     }
 
     tls_reg_write32(HR_GPIO_AF_SEL  + offset, tls_reg_read32(HR_GPIO_AF_SEL  + offset) & (~BIT(pin)));  /* disable gpio function */
     tls_reg_write32(HR_GPIO_DIR     + offset, tls_reg_read32(HR_GPIO_DIR     + offset) & (~BIT(pin)));
-    tls_reg_write32(HR_GPIO_PULL_EN + offset, tls_reg_read32(HR_GPIO_PULL_EN + offset) & (~BIT(pin)));
+	tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | (BIT(pin))); /*disable pullup*/
+	tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) & (~BIT(pin)));	/*disable pulldown*/
 }
+
+static void io_cfg_option7(enum tls_io_name name)
+{
+    u8  pin;
+    u16 offset;
+
+    if (name >= WM_IO_PB_00)
+    {
+        pin    = name - WM_IO_PB_00;
+        offset = TLS_IO_AB_OFFSET;
+		io_pb_option67  &= BIT(pin);		
+    }
+    else
+    {
+        pin    = name;
+        offset = 0;
+		io_pa_option67  &= BIT(pin);
+    }
+
+    tls_reg_write32(HR_GPIO_AF_SEL  + offset, tls_reg_read32(HR_GPIO_AF_SEL  + offset) & (~BIT(pin)));  /* enable gpio function */
+    tls_reg_write32(HR_GPIO_DIR     + offset, tls_reg_read32(HR_GPIO_DIR     + offset) & (~BIT(pin)));  /* set input */
+	tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | (BIT(pin))); /* disable pull up */
+	tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) & (~BIT(pin)));	/*disable pull down*/		
+}
+
 
 /**
  * @brief          This function is used to config io function
@@ -162,6 +202,8 @@ void tls_io_cfg_set(enum tls_io_name name, u8 option)
         io_cfg_option5(name);
     else if (WM_IO_OPTION6 == option)
         io_cfg_option6(name);
+	else if (WM_IO_OPTION7 == option)
+		io_cfg_option7(name);
     else
         TLS_DBGPRT_IO_ERR("invalid io option.\r\n");
 }
@@ -179,7 +221,7 @@ int tls_io_cfg_get(enum tls_io_name name)
 {
     u8  pin;
     u16 offset;
-	u32 afsel,afs1,afs0,dir,pullen;
+	u32 afsel,afs1,afs0,dir,pullupen, pulldownen;
 	
 
     if (name >= WM_IO_PB_00)
@@ -197,7 +239,8 @@ int tls_io_cfg_get(enum tls_io_name name)
 	afs1 = tls_reg_read32(HR_GPIO_AF_S1 + offset);
 	afs0 = tls_reg_read32(HR_GPIO_AF_S0 + offset);
 	dir = tls_reg_read32(HR_GPIO_DIR + offset);
-	pullen = tls_reg_read32(HR_GPIO_PULL_EN + offset);
+	pullupen = tls_reg_read32(HR_GPIO_PULLUP_EN + offset);
+	pulldownen = tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset);
 
 	if(afsel&BIT(pin))
 	{
@@ -212,8 +255,31 @@ int tls_io_cfg_get(enum tls_io_name name)
 	}
 	else
 	{
-		if((!(dir&BIT(pin))) && (pullen&BIT(pin)))
-			return WM_IO_OPTION6;
+		if((!(dir&BIT(pin))) && (pullupen&BIT(pin)) && (!(pulldownen&BIT(pin))))
+		{
+			if (offset)
+			{
+				if (io_pb_option67 & BIT(pin))
+				{
+					return WM_IO_OPTION6;
+				}
+				else
+				{
+					return WM_IO_OPTION7;
+				}
+			}
+			else
+			{
+				if (io_pa_option67 & BIT(pin))
+				{
+					return WM_IO_OPTION6;
+				}
+				else
+				{
+					return WM_IO_OPTION7;
+				}
+			}
+		}
 		else
 			return WM_IO_OPTION5;
 	}

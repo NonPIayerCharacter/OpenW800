@@ -12,6 +12,7 @@
 #include "wm_regs.h"
 #include "wm_irq.h"
 #include "wm_cpu.h"
+#include "wm_pmu.h"
 
 #include "tls_common.h"
 
@@ -32,7 +33,7 @@ struct timer_irq_context {
 
 static struct timer_irq_context timer_context[TLS_TIMER_ID_MAX] = {{0,0}};
 static u8 wm_timer_bitmap = 0;
-
+#if 0
 static void timer_clear_irq(int timer_id)
 {
     volatile u8 i;
@@ -46,14 +47,14 @@ static void timer_clear_irq(int timer_id)
 
     tls_reg_write32(HR_TIMER0_5_CSR, value | TLS_TIMER_INT_CLR(timer_id));
 }
-
+#endif
 static void timer_irq_callback(void *p)
 {
     u8 timer_id;
 
     timer_id = (u8)(u32)p;
 
-    timer_clear_irq(timer_id);
+    //timer_clear_irq(timer_id);
 
     if (NULL != timer_context[timer_id].callback)
         timer_context[timer_id].callback(timer_context[timer_id].arg);
@@ -124,7 +125,14 @@ u8 tls_timer_create(struct tls_timer_cfg *cfg)
     }
 
     if (TLS_TIMER_ID_MAX == i)
-        return WM_TIMER_ID_INVALID;
+    {
+    	return WM_TIMER_ID_INVALID;
+    }
+
+    if (wm_timer_bitmap == 0)
+    {
+        tls_open_peripheral_clock(TLS_PERIPHERAL_TYPE_TIMER);
+    }
 
     wm_timer_bitmap  |= BIT(i);
     timer_context[i].callback = cfg->callback;
@@ -260,6 +268,11 @@ void tls_timer_destroy(u8 timer_id)
     timer_context[timer_id].arg      = NULL;
 
     wm_timer_bitmap &= ~BIT(timer_id);
+
+	if (wm_timer_bitmap == 0)
+	{
+		tls_close_peripheral_clock(TLS_PERIPHERAL_TYPE_TIMER);
+	}
 
     return;
 }

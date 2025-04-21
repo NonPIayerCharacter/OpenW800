@@ -32,28 +32,6 @@
  * @{
  */
 
-/**
- * @brief          enable the bluetooth host
- *
- * @param[in]      *p_callback   pointer on callback function
- * @param[in]       log_level    @ref tls_bt_log_level_t
- *
- * @retval         @ref tls_bt_status_t
- *
- * @note           None
- */
-tls_bt_status_t tls_bt_host_enable(tls_bt_host_callback_t callback, tls_bt_log_level_t log_level);
-
-/**
- * @brief          disable the bluetooth host
- *
- * @param          None
- *
- * @return         @ref tls_bt_status_t
- *
- * @note           None
- */
-tls_bt_status_t tls_bt_host_disable(void);
 
 /**
  * @brief          reply the pin request
@@ -92,12 +70,13 @@ tls_bt_status_t tls_bt_ssp_reply(const tls_bt_addr_t *bd_addr, tls_bt_ssp_varian
  * @brief          set the adapter property
  *
  * @param[in]      *property         remote device address
+ * @param[in]      update_to_flash  save the property to flash or not
  *
  * @return	       @ref tls_bt_status_t
  *
  * @note           None
  */
-tls_bt_status_t tls_bt_set_adapter_property(const tls_bt_property_t *property);
+tls_bt_status_t tls_bt_set_adapter_property(const tls_bt_property_t *property, uint8_t update_to_flash);
 
 /**
  * @brief          get the adapter property
@@ -246,13 +225,13 @@ tls_bt_status_t tls_bt_ctrl_disable(void);
  * @brief          configure the ble emit power of different ble handle type
  *
  * @param[in]      power_type     @ref tls_ble_power_type_t
- * @param[in]      power_level    [-12, 9]db, step length 3
+ * @param[in]      power_level_index    [1,2,3,4,5] map to[1,4,7,10,13]dBm
  *
  * @retval         @ref tls_bt_status_t
  *
- * @note           None
+ * @note           power_type, supports TLS_BLE_PWR_TYPE_DEFAULT only. 
  */
-tls_bt_status_t tls_ble_set_tx_power(tls_ble_power_type_t power_type, int8_t power_level);
+tls_bt_status_t tls_ble_set_tx_power(tls_ble_power_type_t power_type, int8_t power_level_index);
 
 /**
  * @brief          get the ble emit power of different ble handle type
@@ -261,15 +240,15 @@ tls_bt_status_t tls_ble_set_tx_power(tls_ble_power_type_t power_type, int8_t pow
  *
  * @retval         power value db
  *
- * @note           None
+ * @note           power_type, supports TLS_BLE_PWR_TYPE_DEFAULT only. 
  */
 int8_t  tls_ble_get_tx_power(tls_ble_power_type_t power_type);
 
 /**
  * @brief          configure the classic/enhanced bluetooth transmit power
  *
- * @param[in]      min_power_level    power level[-12, 9]db
- * @param[in]      max_power_level    power level[-12, 9]db
+ * @param[in]      min_power_level    power level[1,13]dBm
+ * @param[in]      max_power_level    power level[1,13]dBm
  *
  * @retval         @ref tls_bt_status_t
  *
@@ -336,6 +315,19 @@ tls_bt_status_t tls_bt_vuart_host_send_packet( uint8_t *data, uint16_t len);
 tls_bt_status_t tls_bt_ctrl_if_register(const tls_bt_host_if_t *p_host_if);
 
 /**
+ * @brief          this function unregister the host stack receive message function 
+ *                 and indication the controller receive hci command avaiable
+ *
+ * @param     None
+ *
+ * @retval         @ref tls_bt_ctrl_status_t
+ *
+ * @note           None
+ */
+tls_bt_status_t tls_bt_ctrl_if_unregister();
+
+
+/**
  * @brief          this function configure the controller enter into sleep mode when controller
  *                 is in idle mode
  *
@@ -370,6 +362,89 @@ bool  tls_bt_ctrl_is_sleep(void);
  * @note           None
  */
 tls_bt_status_t tls_bt_ctrl_wakeup(void);
+
+/**
+ * @brief          this function check controller can handle hci commands yes or no
+ *
+ * @param          None
+ *
+ * @retval         @ref bool TRUE or FALSE
+ *
+ * @note           None
+ */
+
+bool tls_bt_vuart_host_check_send_available();
+
+/**
+ * @brief          this function exit bluetooth test mode
+ *
+ * @param          None
+ *
+ * @retval         @ref tls_bt_ctrl_status_t
+ *
+ * @note           None
+ */
+tls_bt_status_t exit_bt_test_mode();
+
+/**
+ * @brief          this function enable bluetooth test mode
+ *
+ * @param[in]       p_hci_if, specific the uart port property
+ *
+ * @retval         @ref tls_bt_ctrl_status_t
+ *
+ * @note           None
+ */
+
+tls_bt_status_t enable_bt_test_mode(tls_bt_hci_if_t *p_hci_if);
+
+/**
+ * @brief          this function enable rf to bluetooth mode
+ *
+ * @param[in]       1, bluetooth mode, 0 wifi/bluetooth mode
+ *
+ * @retval         None
+ *
+ * @note           None
+ */
+
+void tls_rf_bt_mode(uint8_t enable);
+
+/**
+ * @brief          this function enable controller to running in mesh mode or not
+ *
+ * @param[in]       1, mesh mode, 0 normal mode
+ *
+ * @retval         None
+ *
+ * @note           None
+ */
+
+tls_bt_status_t tls_bt_set_mesh_mode(uint8_t enable);
+
+/**
+ * @brief          this function register callback function when controller entering or exiting sleep mode 
+ *
+ * @param[in]      sleep_enter, sleep starting callback;sleep_exit, sleep exiting callback
+ *
+ * @retval         TLS_BT_STATUS_SUCCESS or TLS_BT_STATUS_UNSUPPORTED;
+ *
+ * @note           None
+ */
+
+tls_bt_status_t tls_bt_register_sleep_callback(tls_bt_controller_sleep_enter_func_ptr sleep_enter, tls_bt_controller_sleep_exit_func_ptr sleep_exit);
+
+/**
+ * @brief          this function register blocking operation function(eg. flash read/write).
+ *
+ * @param[in]      process_ptr blocking operation function pointer
+ *
+ * @retval         always TLS_BT_STATUS_SUCCESS;
+ *
+ * @note           if the function is running, the system interrupt will be holded. so we have to do ti when bt is in idle state
+ */
+
+tls_bt_status_t tls_bt_register_pending_process_callback(tls_bt_app_pending_process_func_ptr process_ptr);
 
 /**
  * @}

@@ -24,11 +24,14 @@ typedef enum
 
 	LSD_ONESHOT_CHAN_TEMP_LOCKED = 1,
 
-	LSD_ONESHOT_CHAN_LOCKED = 2,
+	LSD_ONESHOT_CHAN_LOCKED_BW20 = 2,
 
-	LSD_ONESHOT_COMPLETE = 3,
+	LSD_ONESHOT_CHAN_LOCKED_BW40 = 3,
 
-	LSD_ONESHOT_ERR = 4
+	LSD_ONESHOT_COMPLETE = 4,
+
+	LSD_ONESHOT_ERR = 5
+
 
 } lsd_oneshot_status_t;
 
@@ -43,7 +46,7 @@ struct lsd_param_t{
 	u8 total_len;
 };
 
-extern struct lsd_param_t lsd_param;
+extern struct lsd_param_t *lsd_param;
 
 typedef int (*lsd_printf_fn) (const char* format, ...);
 
@@ -51,6 +54,7 @@ extern lsd_printf_fn lsd_printf;
 
 int tls_lsd_recv(u8 *buf, u16 data_len);
 void tls_lsd_init(u8 *scanBss);
+void tls_lsd_deinit(void);
 
 
 

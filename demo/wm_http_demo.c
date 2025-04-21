@@ -32,6 +32,12 @@ u32 http_snd_req(HTTPParameters ClientParams, HTTP_VERB verb, char *pSndData, u8
             nRetCode =  HTTP_CLIENT_ERROR_INVALID_HANDLE;
             break;
         }
+		/*
+        if((nRetCode = HTTPClientAddRequestHeaders(pHTTP,"media type", "application/json", 1))!= HTTP_CLIENT_SUCCESS)
+		{
+            break;
+        }
+		*/
         // Set the Verb
         nRetCode = HTTPClientSetVerb(pHTTP, verb);
         if(nRetCode != HTTP_CLIENT_SUCCESS)
@@ -129,7 +135,7 @@ int http_get_demo(char *buf)
         return WM_FAILED;
     }
     memset(httpParams.Uri, 0, 128);
-    sprintf(httpParams.Uri, "http://%d.%d.%d.%d:8080/TestWeb/", RemoteIp[0], RemoteIp[1], RemoteIp[2], RemoteIp[3]);
+    sprintf(httpParams.Uri, "%s", buf);
     httpParams.Verbose = TRUE;
     printf("Location: %s\n", httpParams.Uri);
     http_get(httpParams);

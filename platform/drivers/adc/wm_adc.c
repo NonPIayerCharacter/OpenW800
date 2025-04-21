@@ -20,56 +20,135 @@
 #include "wm_dma.h"
 #include "wm_io.h"
 #include "wm_irq.h"
+#include "wm_mem.h"
+#include "wm_efuse.h"
 
 #define  ATTRIBUTE_ISR __attribute__((isr))
 
+typedef struct 
+{
+	int poly_n;
+	double a[3];
+}ST_ADC_POLYFIT_PARAM;
 
-//TODO
-#define HR_SD_ADC_CONFIG_REG 0
-static u32 adc_offset = 0;
+/*f(x) = kx + b*/
+//#define ADC_CAL_K_POS   (6)
+//#define ADC_CAL_B_POS   (7)
 
+
+ST_ADC_POLYFIT_PARAM _polyfit_param = {0};
+extern void polyfit(int n,double x[],double y[],int poly_n,double a[]);
+
+static int adc_offset = 0;
+static int *adc_dma_buffer = NULL;
 volatile ST_ADC gst_adc;
 
 ATTRIBUTE_ISR void ADC_IRQHandler(void)
 {
-	u16 adcvalue;
+	u32 adcvalue;
 	int reg;
+	csi_kernel_intrpt_enter();
 
 	reg = tls_reg_read32(HR_SD_ADC_INT_STATUS);
-	if(reg & ADC_INT_MASK)      //ADC中断
+	if(reg & ADC_INT_MASK)      //ADC涓柇
 	{
-	    tls_adc_clear_irq(ADC_INT_TYPE_ADC);
-	    adcvalue = tls_read_adc_result();
+		tls_adc_clear_irq(ADC_INT_TYPE_ADC);
+
+
 	    if(gst_adc.adc_cb)
-			gst_adc.adc_cb(&adcvalue,1);
+		{
+		    adcvalue = tls_read_adc_result();
+			gst_adc.adc_cb((int *)&adcvalue,1);
+	    }
 	}
 	if(reg & CMP_INT_MASK)
 	{
+
 	    tls_adc_clear_irq(ADC_INT_TYPE_ADC_COMP);
 	    if(gst_adc.adc_bigger_cb)
 			gst_adc.adc_bigger_cb(NULL, 0);
 	}
-	
+	csi_kernel_intrpt_exit();
 }
 
 static void adc_dma_isr_callbk(void)
 {
 	if(gst_adc.adc_dma_cb)
-		gst_adc.adc_dma_cb((u16 *)(ADC_DEST_BUFFER_DMA), gst_adc.valuelen);	
+	{
+		if (adc_dma_buffer)
+		{
+			gst_adc.adc_dma_cb((int *)(adc_dma_buffer), gst_adc.valuelen);	
+		}
+	}
 }
+int adc_polyfit_init(ST_ADC_POLYFIT_PARAM *polyfit_param)
+{
+	FT_ADC_CAL_ST adc_cal;
+	/*function f(x) = ax + b*/
+	float a = 0.0;
+	float b = 0.0;
+	int i;
+	double x[8] = {0.0};
+	double y[8] = {0.0};
 
+	polyfit_param->poly_n = 0;
+	memset(&adc_cal, 0, sizeof(adc_cal));
+	tls_get_adc_cal_param(&adc_cal);
+	if ((adc_cal.valid_cnt == 4)
+		||(adc_cal.valid_cnt == 2) 
+		|| (adc_cal.valid_cnt == 3))
+	{
+		//memcpy((char *)&a, (char *)&adc_cal.units[ADC_CAL_K_POS], 4);
+		//memcpy((char *)&b, (char *)&adc_cal.units[ADC_CAL_B_POS], 4);	
+		a = adc_cal.a;
+		b = adc_cal.b;
+		if ((a > 1.0) && (a < 1.3) && (b < -1000.0)) /*new calibration*/
+		{
+			polyfit_param->poly_n = 1;
+			polyfit_param->a[1] = a;
+			polyfit_param->a[0] = b;
+		}
+		else /*old calibration*/
+		{
+			for(i = 0; i < adc_cal.valid_cnt; i++)
+			{
+				x[i] = (double)adc_cal.units[i].real_val;
+				y[i] = (double)adc_cal.units[i].ref_val;
+			}
+			polyfit_param->poly_n = 1;
+			polyfit(adc_cal.valid_cnt,x,y,1, polyfit_param->a);
+			if (b < -1000.0)
+			{
+				polyfit_param->a[0] = b;
+			}
+		}
+	}
+
+	return 0;
+}
 
 void tls_adc_init(u8 ifusedma,u8 dmachannel)
 {
+	/*ADC LDO ON here, after 90ns, ADC can work to avoid ADC affect those ADC IOs that are multiplexed GPIO input to capture irq*/
+	u32 value = 0;
+	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
+	value |= CONFIG_EN_LDO_ADC_VAL(1);
+	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);
+
+	memset(&_polyfit_param, 0, sizeof(_polyfit_param));
+	adc_polyfit_init(&_polyfit_param);
 	tls_reg_write32(HR_SD_ADC_CTRL, ANALOG_SWITCH_TIME_VAL(0x50)|ANALOG_INIT_TIME_VAL(0x50)|ADC_IRQ_EN_VAL(0x1));
-	tls_reg_write32(HR_SD_ADC_PGA_CTRL, CLK_CHOP_SEL_PGA_VAL(1)|GAIN_CTRL_PGA_VAL(2)|PGA_BYPASS_VAL(0)|PGA_CHOP_ENP_VAL(0)|PGA_EN_VAL(1));
 	tls_irq_enable(ADC_IRQn);
 
-//注册中断和channel有关，所以需要先请求
+	//娉ㄥ唽涓柇鍜宑hannel鏈夊叧锛屾墍浠ラ渶瑕佸厛璇锋眰
 	if(ifusedma)
 	{
-		gst_adc.dmachannel = tls_dma_request(dmachannel, 0);	//请求dma，不要直接指定，因为请求的dma可能会被别的任务使用
-		tls_dma_irq_register(gst_adc.dmachannel, (void(*)(void*))adc_dma_isr_callbk, NULL, TLS_DMA_IRQ_TRANSFER_DONE);
+		gst_adc.dmachannel = tls_dma_request(dmachannel, TLS_DMA_FLAGS_CHANNEL_SEL(TLS_DMA_SEL_SDADC_CH0 + dmachannel) |
+                            TLS_DMA_FLAGS_HARD_MODE);	//璇锋眰dma锛屼笉瑕佺洿鎺ユ寚瀹氾紝鍥犱负璇锋眰鐨刣ma鍙兘浼氳鍒殑浠诲姟浣跨敤
+        if (gst_adc.dmachannel != 0xFF)
+       	{
+			tls_dma_irq_register(gst_adc.dmachannel, (void(*)(void*))adc_dma_isr_callbk, NULL, TLS_DMA_IRQ_TRANSFER_DONE);
+        }
 	}
 
 	//printf("\ndma channel = %d\n",gst_adc.dmachannel);
@@ -95,7 +174,7 @@ void tls_adc_clear_irq(int inttype)
 	}
 }
 
-void tls_adc_irq_register(int inttype, void (*callback)(u16 *buf, u16 len))
+void tls_adc_irq_register(int inttype, void (*callback)(int *buf, u16 len))
 {
 	if(ADC_INT_TYPE_ADC == inttype)
 	{
@@ -125,11 +204,11 @@ u32 tls_read_adc_result(void)
 void tls_adc_start_with_cpu(int Channel)
 {
 	u32 value;
-      
+
 	/* Stop adc first */
 	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
 	value |= CONFIG_PD_ADC_VAL(1);
-	value &= ~(CONFIG_RSTN_ADC_VAL(1)|CONFIG_EN_LDO_ADC_VAL(1));
+	value &= ~(CONFIG_RSTN_ADC_VAL(1));
 	value &= ~(CONFIG_ADC_CHL_SEL_MASK);
 	value |= CONFIG_ADC_CHL_SEL(Channel);
 
@@ -137,9 +216,8 @@ void tls_adc_start_with_cpu(int Channel)
 	
 	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
 	value &= ~(CONFIG_PD_ADC_VAL(1));
-	value |= (CONFIG_RSTN_ADC_VAL(1)|CONFIG_EN_LDO_ADC_VAL(1));
+	value |= (CONFIG_RSTN_ADC_VAL(1));
 	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);
-
 }
 
 
@@ -158,11 +236,25 @@ void tls_adc_start_with_dma(int Channel, int Length)
 
 	gst_adc.valuelen = len;
 
+	if (adc_dma_buffer)
+	{
+		tls_mem_free(adc_dma_buffer);
+		adc_dma_buffer = NULL;
+	}
+
+	adc_dma_buffer = tls_mem_alloc(len*4);
+	if (adc_dma_buffer == NULL)
+	{
+		//wm_printf("adc dma buffer alloc failed\r\n");
+		return;
+	}
+
 	Channel &= 0xF;
 
+	/*disable adc:set adc pd, rstn and ldo disable*/
 	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
 	value |= CONFIG_PD_ADC_VAL(1);
-	value &= ~(CONFIG_RSTN_ADC_VAL(1)|CONFIG_EN_LDO_ADC_VAL(1));	
+	value &= ~(CONFIG_RSTN_ADC_VAL(1));	
 	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);	
 	
 	/* Stop dma if necessary */
@@ -171,55 +263,60 @@ void tls_adc_start_with_dma(int Channel, int Length)
 		DMA_CHNLCTRL_REG(gst_adc.dmachannel) = 2;
 	}
 
-	DMA_SRCADDR_REG(gst_adc.dmachannel) = HR_SD_ADC_RESULT_REG;
-	DMA_DESTADDR_REG(gst_adc.dmachannel) = ADC_DEST_BUFFER_DMA;
-	/* Hard, Normal, adc_req */
-	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);		
-	if (Channel == 8){
-		DMA_MODE_REG(gst_adc.dmachannel) = (0x01 | (0+6)<<2);
-		value |= (0x1 << 11); 		
-	}
-	else if (Channel == 9){
-		DMA_MODE_REG(gst_adc.dmachannel) = (0x01 | (2+6)<<2);
-		value |= (0x1 << 13); 		
-	}
-	else if (Channel == 10){
-		DMA_MODE_REG(gst_adc.dmachannel) = (0x01 | (4+6)<<2);
-		value |= (0x1 << 15); 		
-	}
-	else if (Channel == 11){
-		DMA_MODE_REG(gst_adc.dmachannel) = (0x01 | (6+6)<<2);
-		value |= (0x1 << 17); 		
-	}
-	else{
-		DMA_MODE_REG(gst_adc.dmachannel) = (0x01 | (Channel+6)<<2);
-		value |= (0x1 << (11 + Channel)); 		
-	}	
-	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);
+    DMA_SRCADDR_REG(gst_adc.dmachannel) = HR_SD_ADC_RESULT_REG;
+	DMA_DESTADDR_REG(gst_adc.dmachannel) = (u32)adc_dma_buffer;
+	DMA_SRCWRAPADDR_REG(gst_adc.dmachannel) = HR_SD_ADC_RESULT_REG;
+	DMA_DESTWRAPADDR_REG(gst_adc.dmachannel) = (u32)adc_dma_buffer;
+    DMA_WRAPSIZE_REG(gst_adc.dmachannel) = (len*4) << 16;
+
 	/* Dest_add_inc, halfword,  */
-	DMA_CTRL_REG(gst_adc.dmachannel) = (1<<3)|(1<<5)|((len*2)<<8);
+	DMA_CTRL_REG(gst_adc.dmachannel) = (3<<3)|(2<<5)|((len*4)<<8)|(1<<0);
 	DMA_INTMASK_REG &= ~(0x01 << (gst_adc.dmachannel *2 + 1));
 	DMA_CHNLCTRL_REG(gst_adc.dmachannel) = 1;		/* Enable dma */
 
+	/*Enable dma*/
+	value = tls_reg_read32(HR_SD_ADC_CTRL);
+	value |= (1<<0);
+	tls_reg_write32(HR_SD_ADC_CTRL, value); 
+
 	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
+    value &= ~(CONFIG_ADC_CHL_SEL_MASK);
 	value |= CONFIG_ADC_CHL_SEL(Channel);
 	value &= ~(CONFIG_PD_ADC_VAL(1));
-	value |= (CONFIG_RSTN_ADC_VAL(1)|CONFIG_EN_LDO_ADC_VAL(1));	
-//	printf("config value==%x\n", value);
+	value |= (CONFIG_RSTN_ADC_VAL(1));	
 	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);		/*start adc*/
+
 }
 
 void tls_adc_stop(int ifusedma)
 {
 	u32 value;
 
+	tls_reg_write32(HR_SD_ADC_PGA_CTRL, 0);
+
 	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
 	value |= CONFIG_PD_ADC_VAL(1);
 	value &= ~(CONFIG_RSTN_ADC_VAL(1)|CONFIG_EN_LDO_ADC_VAL(1));	
 	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);
 
+	/*Disable dma*/
+	value = tls_reg_read32(HR_SD_ADC_CTRL);
+	value &= ~(1<<0);
+	tls_reg_write32(HR_SD_ADC_CTRL, value); 
+
+	/*Disable compare function and compare irq*/
+	value = tls_reg_read32(HR_SD_ADC_CTRL);
+	value &= ~(3<<4);
+	tls_reg_write32(HR_SD_ADC_CTRL, value);	
+
 	if(ifusedma)
 		tls_dma_free(gst_adc.dmachannel);
+
+	if (adc_dma_buffer)
+	{
+		tls_mem_free(adc_dma_buffer);
+		adc_dma_buffer = NULL;
+	}
 }
 
 void tls_adc_config_cmp_reg(int cmp_data, int cmp_pol)
@@ -247,7 +344,7 @@ void tls_adc_cmp_start(int Channel, int cmp_data, int cmp_pol)
 	/* Stop adc first */
 	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
 	value |= CONFIG_PD_ADC_VAL(1);
-	value &= ~(CONFIG_RSTN_ADC_VAL(1)|CONFIG_EN_LDO_ADC_VAL(1));		
+	value &= ~(CONFIG_RSTN_ADC_VAL(1));		
 	value |= CONFIG_ADC_CHL_SEL(Channel);
 	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);
 
@@ -255,8 +352,13 @@ void tls_adc_cmp_start(int Channel, int cmp_data, int cmp_pol)
 	
 	value = tls_reg_read32(HR_SD_ADC_ANA_CTRL);
 	value &= ~(CONFIG_PD_ADC_VAL(1));
-	value |= (CONFIG_RSTN_ADC_VAL(1)|CONFIG_EN_LDO_ADC_VAL(1));	
+	value |= (CONFIG_RSTN_ADC_VAL(1));	
 	tls_reg_write32(HR_SD_ADC_ANA_CTRL, value);		/*start adc*/
+
+	/*Enable compare function and compare irq*/
+	value = tls_reg_read32(HR_SD_ADC_CTRL);
+	value |= (3<<4);
+	tls_reg_write32(HR_SD_ADC_CTRL, value);	
 }
 
 
@@ -284,9 +386,66 @@ void tls_adc_set_clk(int div)
     value &= ~(0xFF<<8);
     value |=  (div&0xFF)<<8;
     tls_reg_write32(HR_CLK_SEL_CTL, value);
+    value = tls_reg_read32(HR_CLK_DIV_CTL);
+    value |= (1 << 31);
+    tls_reg_write32(HR_CLK_DIV_CTL, value);
 }
 
-void signedToUnsignedData(u32 *adcValue)
+void tls_adc_set_pga(int gain1, int gain2)
+{
+	u32 val = 0;
+	u8 gain1times = 0;
+	u8 gain2times = 0;	
+	switch(gain1)
+	{
+		case 1:
+			gain1times = 0;
+		break;
+		case 16:
+			gain1times = 1;
+		break;
+		case 32:
+			gain1times = 2;
+		break;
+		case 64:
+			gain1times = 3;
+		break;
+		case 128:
+			gain1times = 4;
+		break;
+		case 256:
+			gain1times = 5;
+		break;
+		default:
+			gain1times = 0;
+			break;
+	}
+	
+	switch(gain2)
+	{
+		case 1:
+			gain2times = 0;
+			break;
+		case 2:
+			gain2times = 1;
+			break;
+		case 3:
+			gain2times = 2;
+			break;
+		case 4:
+			gain2times = 3;
+			break;
+		default:
+			gain2times = 0;
+			break;
+	}
+
+	val = tls_reg_read32(HR_SD_ADC_PGA_CTRL);
+	val = GAIN_CTRL_PGA_VAL(gain2times)|CLK_CHOP_SEL_PGA_VAL(gain1times)|PGA_BYPASS_VAL(0)|PGA_CHOP_ENP_VAL(1)|PGA_EN_VAL(1);
+	tls_reg_write32(HR_SD_ADC_PGA_CTRL, val);
+}
+
+void signedToUnsignedData(int *adcValue)
 {
 	if (*adcValue &0x20000)
 	{
@@ -300,97 +459,145 @@ void signedToUnsignedData(u32 *adcValue)
 
 static void waitForAdcDone(void)
 {
-    while(1)
-    {
-        int reg = tls_reg_read32(HR_SD_ADC_INT_STATUS);
-		//printf("reg:%x\r\n", reg);
-        if(reg & ADC_INT_MASK)      //ADC中断
-        {
-            tls_adc_clear_irq(ADC_INT_TYPE_ADC);
-            break;
-        }
+    u32 counter = 0;
+	u32 timeout = 10000;
+	u32 reg = 0;
 
-        if(reg & CMP_INT_MASK)      //ADC中断
+	/*wait for transfer success*/
+	tls_irq_disable(ADC_IRQn);
+	while(timeout--)
+	{
+		reg = tls_reg_read32(HR_SD_ADC_INT_STATUS);
+		if (reg & ADC_INT_MASK)
+		{
+			counter++;
+		    tls_reg_write32(HR_SD_ADC_INT_STATUS, reg|ADC_INT_MASK);			
+			if (counter == 4)
+			{
+				break;
+			}
+		}
+		else if(reg & CMP_INT_MASK)
         {
-            tls_adc_clear_irq(ADC_INT_TYPE_ADC_COMP);
-            break;
-        }		
-    }
+        	counter++;
+			tls_reg_write32(HR_SD_ADC_INT_STATUS, reg|CMP_INT_MASK);
+			if (counter == 4)
+			{
+				break;
+			}
+        }
+	}
+	tls_irq_enable(ADC_IRQn);
+}
+
+int cal_voltage(double vol)
+{
+	double y1, voltage;
+	int average = ((int)vol >> 2) & 0xFFFF;
+
+	if(_polyfit_param.poly_n == 1)
+	{
+		y1 = _polyfit_param.a[1]*average + _polyfit_param.a[0];
+	}
+	else
+	{
+		voltage = ((double)vol - (double)adc_offset)/4.0;
+		voltage = 1.196 + voltage*(126363/1000.0)/1000000;
+		
+	    y1 = voltage*10000;
+	}
+
+	return (int)(y1/10);
 }
 
 u32 adc_get_offset(void)
 { 
+	adc_offset = 0;
     tls_adc_init(0, 0); 
 	tls_adc_reference_sel(ADC_REFERENCE_INTERNAL);
 	tls_adc_start_with_cpu(CONFIG_ADC_CHL_OFFSET);	
+	tls_adc_set_pga(1,1);
+	tls_adc_set_clk(0x28);		
 
     waitForAdcDone();
-	adc_offset = tls_read_adc_result(); //获取adc转换结果
+	adc_offset = tls_read_adc_result(); //鑾峰彇adc杞崲缁撴灉
+	signedToUnsignedData(&adc_offset);
 	tls_adc_stop(0);
-
-	printf("\r\noffset:%d\r\n", adc_offset);
+//printf("adc_offset: 0x%x\r\n", adc_offset);
     return adc_offset;
 }
 
-u32 adc_get_interTemp(void)
+int adc_get_interTemp(void)
 {
-	u32 code1 = 0, code2 = 0;
-    u32 tem;
-	
-	adc_get_offset();
-
-    tls_adc_init(0, 0); 
-	tls_adc_reference_sel(ADC_REFERENCE_INTERNAL);
-	tls_adc_start_with_cpu(CONFIG_ADC_CHL_TEMP);
-	tls_adc_set_clk(0x28);
-	tls_reg_write32(HR_SD_ADC_TEMP_CTRL, ~(TEMP_CAL_OFFSET_MASK)|TEMP_EN_VAL(1));
-    waitForAdcDone();
-    code1 = tls_read_adc_result(); 
-
-	tls_reg_write32(HR_SD_ADC_TEMP_CTRL, TEMP_CAL_OFFSET_MASK|TEMP_EN_VAL(1));
-    waitForAdcDone();
-    code2 = tls_read_adc_result(); 
-
-    tls_adc_stop(0);
-	//printf("\r\ncode:%x", (code2 - code1)/2 - adc_offset);
-	tem = code1 - code2;
-    return tem;
+	return adc_temp();
 }
 
-u16 adc_get_inputVolt(u8 channel)
+int adc_get_inputVolt(u8 channel)
 {
-    u32 average = 0;
-    
-    tls_adc_init(0, 0);
+	int average = 0;
+	double voltage = 0.0;
+
+	if(_polyfit_param.poly_n == 0 || (channel == 8) || (channel == 9))
+	{
+		adc_get_offset();
+	}
+	
+	tls_adc_init(0, 0); 
 	tls_adc_reference_sel(ADC_REFERENCE_INTERNAL);
-	tls_adc_start_with_cpu(channel);
+	tls_adc_set_pga(1,1);
 	tls_adc_set_clk(0x28);	
-    waitForAdcDone();
-    average = tls_read_adc_result();
-    tls_adc_stop(0);
+	tls_adc_start_with_cpu(channel);
 
-	printf("\r\nch:%d,inputVolt:%d", channel, average);
+	waitForAdcDone();
+	average = tls_read_adc_result();
+	signedToUnsignedData(&average); 	
+	tls_adc_stop(0);
 
+	if ((channel == 8) || (channel == 9))
+	{
+		voltage = ((double)average - (double)adc_offset)/4.0;
+		voltage = voltage*(126363/1000)/1000000;
+	}
+	else
+	{
+		return cal_voltage((double)average);
+	}
+
+	average = (int)(voltage*1000);
     return average;
 }
 
-u16 adc_get_interVolt(void)
+u32 adc_get_interVolt(void)
 {
 	u32 voltValue;
+	u32 value = 0;
+	//u32 code = 0;	
+	int i = 0;
 	adc_get_offset();
 
     tls_adc_init(0, 0); 
 	tls_adc_reference_sel(ADC_REFERENCE_INTERNAL);
+	tls_adc_set_pga(1,1);
+	tls_adc_set_clk(0x28);	
 	tls_adc_start_with_cpu(CONFIG_ADC_CHL_VOLT);
-	waitForAdcDone();
-	voltValue = tls_read_adc_result();
+	voltValue = 0;
+	for (i = 0;i < 10; i++)
+	{
+		waitForAdcDone();
+		value = tls_read_adc_result();
+		signedToUnsignedData((int *)&value);
+		voltValue += value;
+	}
+	voltValue = voltValue/10;
+	//code = voltValue;
+	voltValue = voltValue;
+	adc_offset = adc_offset;
 	tls_adc_stop(0);
-	printf("\r\ninterVolt:%d", voltValue);
+	voltValue = ((voltValue - adc_offset)*685/20+1200000)*2;
+	value = voltValue - voltValue*10/100;
+	//printf("Power voltage code:0x%x, interVolt:%d(uV)---%d.%d(V)\r\n", code, value, value/1000000, (value%1000000)/1000);
 
-
-
-
-    return voltValue;
+    return value/1000;
 }
 
 /**
@@ -400,80 +607,45 @@ u16 adc_get_interVolt(void)
  *
  * @note           Only use to get chip's internal work temperature.
  */
-u32 adc_temp(void)
+int adc_temp(void)
 {
 	u32 code1 = 0, code2 = 0;
 	u32 val = 0;
-	int i = 0;
-	u32 temptimes = 0;
-	u32 gaintimes = 0;
-	u32 average = 0;
-	u32 averagecode1 = 0;
-	u32 averagecode2 = 0;
 	int temperature = 0;
-	u32 temp_pga = 2;
-	u32 gain_pga = 4;
-	u32 num = 10;
 
-	//printf("temp_pga:%d, gain_pga:%d, num:%d\r\n", temp_pga, gain_pga, num);
-	if (temp_pga == 0)
-	{
-		temp_pga = 1;
-	}
-	if (gain_pga == 0)
-	{
-		gain_pga = 1;
-	}
-	
-	temptimes = temp_pga/2 - 1;
-
-	if (gain_pga < 16)
-	{
-		gaintimes = (gain_pga - 1)<<3;
-	}
-
-	tls_reg_write32(HR_SD_ADC_PGA_CTRL, CLK_CHOP_SEL_PGA_VAL(0)|GAIN_CTRL_PGA_VAL(gaintimes)|PGA_BYPASS_VAL(0)|PGA_CHOP_ENP_VAL(1)|PGA_EN_VAL(1));
+    tls_adc_init(0, 0); 
 	tls_adc_reference_sel(ADC_REFERENCE_INTERNAL);
+	tls_adc_set_pga(1,4);
 	tls_adc_start_with_cpu(CONFIG_ADC_CHL_TEMP);
 	tls_adc_set_clk(0x28);
 	val = tls_reg_read32(HR_SD_ADC_TEMP_CTRL);
 	val &= ~TEMP_GAIN_MASK;
-	val |= TEMP_GAIN_VAL(temptimes);
+	val |= TEMP_GAIN_VAL(0);
 	val |= TEMP_EN_VAL(1);
 
-	for (i = 0; i < num; i++)
-	{
-		tls_adc_clear_irq(ADC_INT_TYPE_ADC);
-		tls_reg_write32(HR_SD_ADC_CTRL, ANALOG_SWITCH_TIME_VAL(0x50)|ANALOG_INIT_TIME_VAL(0x50)|ADC_IRQ_EN_VAL(0x1));	
-		val &= (~(TEMP_CAL_OFFSET_MASK));
-		tls_reg_write32(HR_SD_ADC_TEMP_CTRL, val);		
-	    tls_adc_clear_irq(ADC_INT_TYPE_ADC);
-		tls_reg_write32(HR_SD_ADC_CTRL, ANALOG_SWITCH_TIME_VAL(0x50)|ANALOG_INIT_TIME_VAL(0x50));	
-		tls_os_time_delay(2);
-	    code1 = tls_read_adc_result(); 
-		signedToUnsignedData(&code1);
+	val &= (~(TEMP_CAL_OFFSET_MASK));
+	tls_reg_write32(HR_SD_ADC_TEMP_CTRL, val);		
+	waitForAdcDone();
+    code1 = tls_read_adc_result(); 
+	signedToUnsignedData((int *)&code1);
 
-		tls_adc_clear_irq(ADC_INT_TYPE_ADC);
-		tls_reg_write32(HR_SD_ADC_CTRL, ANALOG_SWITCH_TIME_VAL(0x50)|ANALOG_INIT_TIME_VAL(0x50)|ADC_IRQ_EN_VAL(0x1));
-		val |= TEMP_CAL_OFFSET_MASK;
-		tls_reg_write32(HR_SD_ADC_TEMP_CTRL, val);
+	val |= TEMP_CAL_OFFSET_MASK;
+	tls_reg_write32(HR_SD_ADC_TEMP_CTRL, val);
+	waitForAdcDone();
+    code2 = tls_read_adc_result(); 
+	signedToUnsignedData((int *)&code2);
 
-	    tls_adc_clear_irq(ADC_INT_TYPE_ADC);
-		tls_reg_write32(HR_SD_ADC_CTRL, ANALOG_SWITCH_TIME_VAL(0x50)|ANALOG_INIT_TIME_VAL(0x50));	
-		tls_os_time_delay(2);
-
-	    code2 = tls_read_adc_result(); 
-		signedToUnsignedData(&code2);
-
-		averagecode1 = (code1 + averagecode1 *i)/(i+1);
-		averagecode2 = (code2 + averagecode2 *i)/(i+1);
-	}
+	val &= ~(TEMP_EN_VAL(1));
+	tls_reg_write32(HR_SD_ADC_TEMP_CTRL, val);
 
 	tls_adc_stop(0);
 
-	temperature = ((int)averagecode1 - (int)averagecode2);
-	temperature = ((temperature*1000/(int)(2*temp_pga*gain_pga)-4444100)*1000/15548);
+	temperature = ((int)code1 - (int)code2);
+
+	temperature = ((temperature*1000/(int)(2*2*4)-4120702)*1000/15548);
+
 
 	return temperature;
 }
+
 

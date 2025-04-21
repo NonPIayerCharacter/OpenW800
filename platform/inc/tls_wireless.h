@@ -309,6 +309,7 @@ struct tls_wl_event_ops {
     int (*rx_mgmt)(struct tls_wif *wif,
             struct wl_event_rx_mgmt *mgmt);
 	int (*mac_wdg)(struct tls_wif *wif);
+	int (*chip_wakeup)(struct tls_wif *wif);
 #if TLS_CONFIG_AP_OPT_PS
     int (*beacon_done)(struct tls_wif *wif);
     int (*rx_ps)(struct tls_wif *wif,
@@ -418,15 +419,16 @@ int tls_wl_if_sta_add(struct tls_wif *wif,
 int tls_wl_if_sta_remove(struct tls_wif *wif, u8 *addr);
 int tls_wl_if_get_inact_sec(struct tls_wif *wif, const u8 *addr);
 int tls_wl_if_get_scan_res(struct tls_wif *wif, u8 *buf, u32 buf_size);
+int tls_wl_if_get_scan_res_format2(struct tls_wif *wif, u8 *buf, u32 buf_size);
 int tls_wl_if_disconnect(struct tls_wif *wif);
 int tls_wl_if_tx(struct tls_wif *wif,
         u8 *buf, u32 buflen, bool last_packet, bool is_apsta, bool not_delay);
 int tls_wl_if_set_max_rate(struct tls_wif *wif, u8 max_rate_idx);
 int tls_wl_if_get_max_rate(struct tls_wif *wif, u8 *max_rate_idx);
+#if TLS_CONFIG_IBSS
 int tls_wl_if_set_adhoc(struct tls_wif *wif, int adhoc_automode);
+#endif
 int tls_wl_if_ps(int wake_up);
-int tls_wl_if_standby(int type, int delay, int wake_time);
-int tls_wl_if_sleep(int type, int delay, int wake_time);
 void tls_wl_if_set_errno(int eno);
 int  tls_wl_if_get_errno(void);
 void  tls_wl_if_perror(const char *info);

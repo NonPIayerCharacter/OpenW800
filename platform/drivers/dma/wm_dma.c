@@ -17,9 +17,11 @@
 #include "wm_irq.h"
 #include "wm_osal.h"
 #include "core_804.h"
+#include "wm_pmu.h"
+
 
 #define  ATTRIBUTE_ISR __attribute__((isr))
-
+static u16 dma_used_bit = 0;
 struct tls_dma_channels {
 	unsigned char	channels[8];	/* list of channels */
 };
@@ -44,6 +46,7 @@ static void dma_irq_proc(void *p)
 {
     unsigned char ch;
     unsigned int int_src;
+    static uint32_t len[8] = {0,0,0,0,0,0,0,0};
 
     ch = (unsigned char)(unsigned long)p;
     int_src = tls_reg_read32(HR_DMA_INT_SRC);
@@ -58,6 +61,29 @@ static void dma_irq_proc(void *p)
 
         if (8 == ch)
             return;
+    }
+
+    if (DMA_CTRL_REG(ch) & 0x01)
+    {
+        uint32_t temp = 0, cur_len = 0;
+        
+        temp = DMA_CTRL_REG(ch);
+        if(len[ch] == 0)
+        {
+            len[ch] = (temp & 0xFFFF00) >> 8;
+        }
+        cur_len = (temp & 0xFFFF00) >> 8;
+        if((cur_len + len[ch]) > 0xFFFF)
+        {
+            cur_len = 0;
+            DMA_CHNLCTRL_REG(ch) |= (1 << 1);
+            while(DMA_CHNLCTRL_REG(ch) & (1 << 0));
+            DMA_CHNLCTRL_REG(ch) |= (1 << 0);
+        }
+        
+        temp &= ~(0xFFFF << 8);
+        temp |= ((cur_len + len[ch]) << 8);
+        DMA_CTRL_REG(ch) = temp;
     }
 
     if ((int_src & (TLS_DMA_IRQ_BOTH_DONE << ch * 2)) &&
@@ -86,23 +112,33 @@ static void dma_irq_proc(void *p)
 
 ATTRIBUTE_ISR void DMA_Channel0_IRQHandler(void)
 {
+    csi_kernel_intrpt_enter();
     dma_irq_proc((void *)0);
+    csi_kernel_intrpt_exit();
 }
 ATTRIBUTE_ISR void DMA_Channel1_IRQHandler(void)
 {
+    csi_kernel_intrpt_enter();
     dma_irq_proc((void *)1);
+    csi_kernel_intrpt_exit();
 }
 ATTRIBUTE_ISR void DMA_Channel2_IRQHandler(void)
 {
+    csi_kernel_intrpt_enter();
     dma_irq_proc((void *)2);
+    csi_kernel_intrpt_exit();
 }
 ATTRIBUTE_ISR void DMA_Channel3_IRQHandler(void)
 {
+    csi_kernel_intrpt_enter();
     dma_irq_proc((void *)3);
+    csi_kernel_intrpt_exit();
 }
 ATTRIBUTE_ISR void DMA_Channel4_7_IRQHandler(void)
 {
+    csi_kernel_intrpt_enter();
     dma_irq_proc((void *)4);
+    csi_kernel_intrpt_exit();
 }
 
 /**
@@ -223,7 +259,7 @@ unsigned char tls_dma_start_by_wrap(unsigned char ch, struct tls_dma_descriptor 
     DMA_SRCWRAPADDR_REG(ch) = dma_desc->src_addr;
     DMA_DESTWRAPADDR_REG(ch) = dma_desc->dest_addr;
     DMA_WRAPSIZE_REG(ch) = (dest_zize << 16) | src_zize;
-    DMA_CTRL_REG(ch) = ((dma_desc->dma_ctrl & 0x1ffff) << 1) | (auto_reload ? 0x1: 0x0);
+    DMA_CTRL_REG(ch) = ((dma_desc->dma_ctrl & 0x7fffff) << 1) | (auto_reload ? 0x1: 0x0);
     DMA_CHNLCTRL_REG(ch) |= DMA_CHNL_CTRL_CHNL_ON;
 
     return 0;
@@ -257,6 +293,10 @@ unsigned char tls_dma_start(unsigned char ch, struct tls_dma_descriptor *dma_des
 {
 	if((ch > 7) && !dma_desc) return 1;
 
+	if ((dma_used_bit &(1<<ch)) == 0)
+	{
+		dma_used_bit |= (1<<ch);
+	}
 	DMA_SRCADDR_REG(ch) = dma_desc->src_addr;
 	DMA_DESTADDR_REG(ch) = dma_desc->dest_addr;
 	DMA_CTRL_REG(ch) = ((dma_desc->dma_ctrl & 0x7fffff) << 1) | (auto_reload ? 0x1: 0x0);
@@ -292,56 +332,59 @@ unsigned char tls_dma_stop(unsigned char ch)
 /**
  * @brief          This function is used to Request a free dma channel
  *
- * @param[in]      ch       channel no.
+ * @param[in]      ch       specified channel when ch is valid and not used.
  * @param[in]      flags    flags setted to selected channel
  *
- * @return         Channel no. that is free now
+ * @return         Real DMA Channel No. 
  *
  * @note
- * If ch is 0, the function will select a random free channel,
+ * If ch is invalid or valid but used, the function will select a random free channel.
  * else return the selected channel no.
  */
 unsigned char tls_dma_request(unsigned char ch, unsigned char flags)
 {
-
-	unsigned char freeCh = 0;
+	unsigned char freeCh = 0xFF;
  	int i = 0;
 
-	if (ch == 0)
+	/*If channel is valid, try to use specified DMA channel!*/
+	if ((ch >= 0) && (ch < 8))
+	{
+		if (!(channels.channels[ch] & TLS_DMA_FLAGS_CHANNEL_VALID))
+		{
+			freeCh = ch;
+		}
+	}
+
+	/*If ch is not valid, or ch has been used, try to select another free channel for the caller*/
+	if (freeCh == 0xFF)
 	{
 		for (i = 0; i < 8; i++)
 		{
 			if (!(channels.channels[i] & TLS_DMA_FLAGS_CHANNEL_VALID))
 			{
-			    freeCh = i;
-			    break;
+				freeCh = i;
+				break;
 			}
-	    }
+		}
 
-	    if (8 == i)
-	    {
-        		printf("!!!there is no free DMA channel.!!!\n");
-        		freeCh = 0;
-        }
-	}
-	else if ((ch >0) && (ch < 8))
-    {
-        	if (!(channels.channels[ch] & TLS_DMA_FLAGS_CHANNEL_VALID))
-        	{
-        	    freeCh = ch;
-        	}
-        	else
-        	{
-        		printf("!!!there is no free DMA channel.!!!\n");
-        		freeCh = 0;
-        	}
+		if (8 == i)
+		{
+			printf("!!!There is no free DMA channel.!!!\n");
+		}
 	}
 
-	//if(freeCh != 0)
+	if ((freeCh >= 0) && (freeCh < 8))
 	{
+		if (dma_used_bit == 0)
+		{
+			tls_open_peripheral_clock(TLS_PERIPHERAL_TYPE_DMA);
+		}
+		dma_used_bit |= (1<<freeCh);
+	    
 		channels.channels[freeCh] = flags | TLS_DMA_FLAGS_CHANNEL_VALID;
 		DMA_MODE_REG(freeCh) = flags;
 	}
+
 	return freeCh;
 }
 
@@ -368,6 +411,11 @@ void tls_dma_free(unsigned char ch)
 		DMA_INTSRC_REG |= 0x03<<(ch*2);
 
 		channels.channels[ch] = 0x00;
+		dma_used_bit &= ~(1<<ch);
+		if (dma_used_bit == 0)
+		{
+			tls_close_peripheral_clock(TLS_PERIPHERAL_TYPE_DMA);
+		}
 	}
 }
 
@@ -382,7 +430,17 @@ void tls_dma_free(unsigned char ch)
  */
 void tls_dma_init(void)
 {
-	DMA_INTMASK_REG = 0xffff;
-	DMA_INTSRC_REG  = 0xffff;
+	u32 i = 0;
+	u32 value = 0;
+	for (i = 0; i < 8; i++)
+	{
+		if (!(dma_used_bit & (1<<i)))
+		{
+			value |= 3<<(i*2);
+		}
+	}
+
+	DMA_INTMASK_REG = value;
+	DMA_INTSRC_REG  = value;
 }
 

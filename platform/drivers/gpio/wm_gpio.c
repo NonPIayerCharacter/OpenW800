@@ -19,14 +19,15 @@ struct gpio_irq_context{
 };
 
 
-static struct gpio_irq_context gpio_context[WM_IO_PB_30 - WM_IO_PA_00 + 1] = {{0,0}};
+static struct gpio_irq_context gpio_context[WM_IO_PB_31 - WM_IO_PA_00 + 1] = {{0,0}};
 
 
 ATTRIBUTE_ISR void GPIOA_IRQHandler(void)
 {
-	u8  i     = 0;
-	u8  found = 0;
-	u32 reg   = 0;
+    u8  i     = 0;
+    u8  found = 0;
+    u32 reg   = 0;
+    csi_kernel_intrpt_enter();
 
     reg = tls_reg_read32(HR_GPIO_MIS);
 
@@ -44,14 +45,15 @@ ATTRIBUTE_ISR void GPIOA_IRQHandler(void)
         if (NULL != gpio_context[i].callback)
             gpio_context[i].callback(gpio_context[i].arg);
     }
+    csi_kernel_intrpt_exit();
 }
 
 ATTRIBUTE_ISR void GPIOB_IRQHandler(void)
 {
-	u8  i     = 0;
-	u8  found = 0;
+    u8  i     = 0;
+    u8  found = 0;
     u32 reg   = 0;
-	
+    csi_kernel_intrpt_enter();
     reg = tls_reg_read32(HR_GPIO_MIS + TLS_IO_AB_OFFSET);
 
 
@@ -69,6 +71,7 @@ ATTRIBUTE_ISR void GPIOB_IRQHandler(void)
         if (NULL != gpio_context[i].callback)
             gpio_context[i].callback(gpio_context[i].arg);
     }
+    csi_kernel_intrpt_exit();
 }
 
 /**
@@ -81,43 +84,52 @@ ATTRIBUTE_ISR void GPIOB_IRQHandler(void)
  * @return         None
  *
  * @note
- * From gpio3 to gpio7,attribute can set to WM_GPIO_ATTR_PULLHIGH,
- * but can not set to WM_GPIO_ATTR_PULLLOW,
- * the default attribute is WM_GPIO_ATTR_PULLHIGH.
- * Other gpio can set to WM_GPIO_ATTR_PULLLOW,but can not set to WM_GPIO_ATTR_PULLHIGH,the deault
- * attribute is WM_GPIO_ATTR_PULLLOW.
- * all gpio can set to WM_GPIO_ATTR_FLOATING
  */
 void tls_gpio_cfg(enum tls_io_name gpio_pin, enum tls_gpio_dir dir, enum tls_gpio_attr attr)
 {
-    u8  pin;
-    u16 offset;
+	u8	pin;
+	u16 offset;
 
-    if (gpio_pin >= WM_IO_PB_00)
-    {
-        pin    = gpio_pin - WM_IO_PB_00;
-        offset = TLS_IO_AB_OFFSET;
-    }
-    else
-    {
-        pin    = gpio_pin;
-        offset = 0;
-    }
+	if (gpio_pin >= WM_IO_PB_00)
+	{
+		pin    = gpio_pin - WM_IO_PB_00;
+		offset = TLS_IO_AB_OFFSET;
+	}
+	else
+	{
+		pin    = gpio_pin;
+		offset = 0;
+	}
 
-    /* enable gpio function */
-    tls_io_cfg_set(gpio_pin, WM_IO_OPT5_GPIO);
+	/* enable gpio function */
+	tls_io_cfg_set(gpio_pin, WM_IO_OPT5_GPIO);
 
-    /* gpio direction */
-    if (WM_GPIO_DIR_OUTPUT == dir)
-        tls_reg_write32(HR_GPIO_DIR + offset, tls_reg_read32(HR_GPIO_DIR + offset) | BIT(pin));      /* 1 set output */
-    else if (WM_GPIO_DIR_INPUT == dir)
-        tls_reg_write32(HR_GPIO_DIR + offset, tls_reg_read32(HR_GPIO_DIR + offset) & (~BIT(pin)));   /* 0 set input */
+	/* gpio direction */
+	if (WM_GPIO_DIR_OUTPUT == dir)
+		tls_reg_write32(HR_GPIO_DIR + offset, tls_reg_read32(HR_GPIO_DIR + offset) | BIT(pin)); 	 /* 1 set output */
+	else if (WM_GPIO_DIR_INPUT == dir)
+		tls_reg_write32(HR_GPIO_DIR + offset, tls_reg_read32(HR_GPIO_DIR + offset) & (~BIT(pin)));	 /* 0 set input */
 
-    /* gpio pull attribute */
-    if (WM_GPIO_ATTR_FLOATING == attr)
-        tls_reg_write32(HR_GPIO_PULL_EN + offset, tls_reg_read32(HR_GPIO_PULL_EN + offset) | BIT(pin));  	   /* 1 disable pull */
-    if ((WM_GPIO_ATTR_PULLHIGH == attr) || (WM_GPIO_ATTR_PULLLOW == attr))
-        tls_reg_write32(HR_GPIO_PULL_EN + offset, tls_reg_read32(HR_GPIO_PULL_EN + offset) & (~BIT(pin)));      /* 0 enable pull */
+	/* gpio attribute */
+	if (WM_GPIO_ATTR_FLOATING == attr)
+	{
+		tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | BIT(pin)); 	   /* 1 disable pullup */
+		tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset)&(~BIT(pin)));	   /* 1 disable pulldown */ 
+		
+	}
+	if (WM_GPIO_ATTR_PULLHIGH == attr)
+	{
+		tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) & (~BIT(pin)));		/* 0 enable pullup */
+		tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) &(~BIT(pin)));	   /* 0 disable pulldown */
+	}
+
+	if (WM_GPIO_ATTR_PULLLOW == attr)
+	{
+		tls_reg_write32(HR_GPIO_PULLUP_EN + offset, tls_reg_read32(HR_GPIO_PULLUP_EN + offset) | BIT(pin)); 	/* 0 disable pullup */
+		tls_reg_write32(HR_GPIO_PULLDOWN_EN + offset, tls_reg_read32(HR_GPIO_PULLDOWN_EN + offset) | BIT(pin)); 	   /* 1 disable pulldown */
+	}
+
+
 }
 
 /**
@@ -175,7 +187,7 @@ void tls_gpio_write(enum tls_io_name gpio_pin, u8 value)
 	u32 cpu_sr = 0;
 	u32 reg;
 	u32	reg_en;
-  u8  pin;
+    u8  pin;
     u16 offset;
 
     if (gpio_pin >= WM_IO_PB_00)
@@ -315,16 +327,27 @@ void tls_gpio_irq_disable(enum tls_io_name gpio_pin)
     {
         pin    = gpio_pin - WM_IO_PB_00;
         offset = TLS_IO_AB_OFFSET;
+		reg = tls_reg_read32(HR_GPIO_IE + offset);
+		tls_reg_write32(HR_GPIO_IE + offset, reg & (~(0x1 << pin)));	/* disable interrupt */
+		reg = reg&(~(0x1 << pin));
+		if (reg == 0)
+		{
+			tls_irq_disable(GPIOB_IRQn);
+		}
     }
     else
     {
         pin    = gpio_pin;
         offset = 0;
+		reg = tls_reg_read32(HR_GPIO_IE + offset);
+		tls_reg_write32(HR_GPIO_IE + offset, reg & (~(0x1 << pin)));	/* disable interrupt */	
+		reg = (reg&(~(0x1 << pin)))&0xFFFF;
+		if (reg == 0)
+		{
+			tls_irq_disable(GPIOA_IRQn);
+		}
     }
 
-	reg = tls_reg_read32(HR_GPIO_IE + offset);
-	tls_reg_write32(HR_GPIO_IE + offset, reg & (~(0x1 << pin)));	/* disable interrupt */
-	tls_irq_disable(GPIOA_IRQn);
 }
 
 /**
@@ -372,7 +395,6 @@ u8 tls_get_gpio_irq_status(enum tls_io_name gpio_pin)
  */
 void tls_clr_gpio_irq_status(enum tls_io_name gpio_pin)
 {
-	u32 reg;
 	u8  pin;
     u16 offset;
 
@@ -387,8 +409,7 @@ void tls_clr_gpio_irq_status(enum tls_io_name gpio_pin)
         offset = 0;
     }
 
-	reg = tls_reg_read32(HR_GPIO_IC + offset);
-	tls_reg_write32(HR_GPIO_IC + offset, reg | (0x1 << pin));		/* 1 clear interrupt status */
+	tls_reg_write32(HR_GPIO_IC + offset, (0x1 << pin));		/* 1 clear interrupt status */
 }
 
 /**

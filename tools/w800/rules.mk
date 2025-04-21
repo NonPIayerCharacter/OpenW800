@@ -1,12 +1,15 @@
 CSRCS ?= $(wildcard *.c)
+CPPSRCS ?= $(wildcard *.cpp)
 ASRCS ?= $(wildcard *.S)
 
 SUBDIRS ?= $(patsubst %/,%,$(dir $(wildcard */Makefile)))
 
 OBJS := $(CSRCS:%.c=$(OBJODIR)/$(notdir $(shell pwd))/%.o) \
-        $(ASRCS:%.S=$(OBJODIR)/$(notdir $(shell pwd))/%.o)
+        $(ASRCS:%.S=$(OBJODIR)/$(notdir $(shell pwd))/%.o) \
+        $(CPPSRCS:%.cpp=$(OBJODIR)/$(notdir $(shell pwd))/%.o)
 
 OBJS-DEPS := $(patsubst %.c, $(OBJODIR)/$(notdir $(shell pwd))/%.o.d, $(CSRCS))
+OBJS-CPPDEPS := $(patsubst %.cpp, $(OBJODIR)/$(notdir $(shell pwd))/%.o.d, $(CPPSRCS))
 
 OLIBS := $(GEN_LIBS:%=$(LIBODIR)/%)
 
@@ -102,13 +105,20 @@ help:
 	@echo  '               and capture the log output by the device'
 
 lib: .subdirs $(OBJS) $(OLIBS)
+ifeq ($(USE_NIMBLE), 1)
 	@cp $(LIBODIR)/libapp$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
+	@cp $(LIBODIR)/libblehost$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
+else
+	@cp $(LIBODIR)/libapp_br_edr$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
+	@cp $(LIBODIR)/libbthost_br_edr$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
+endif	
 	@cp $(LIBODIR)/libwmarch$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
 	@cp $(LIBODIR)/libwmcommon$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
 	@cp $(LIBODIR)/libdrivers$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
 	@cp $(LIBODIR)/libnetwork$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
 	@cp $(LIBODIR)/libos$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
 	@cp $(LIBODIR)/libwmsys$(LIB_EXT) $(TOP_DIR)/lib/$(CONFIG_ARCH_TYPE)
+	@echo "libs has been updated."
 
 menuconfig:
 	@$(SDK_TOOLS)/mconfig.sh
@@ -152,7 +162,9 @@ endif
 $(OBJODIR)/$(notdir $(shell pwd))/%.o: %.c
 	@mkdir -p $(dir $(@))
 	$(CC) $(if $(findstring $<,$(DSRCS)),$(DFLAGS),$(CFLAGS)) $(COPTS_$(*F)) $(INCLUDES) $(CMACRO) -c "$<" -o "$@" -MMD -MD -MF "$(@:$(OBJODIR)/$(notdir $(shell pwd))/%.o=$(OBJODIR)/$(notdir $(shell pwd))/%.o.d)" -MT "$(@)"
-
+$(OBJODIR)/$(notdir $(shell pwd))/%.o: %.cpp
+	@mkdir -p $(dir $(@))
+	$(CPP) $(if $(findstring $<,$(DSRCS)),$(DFLAGS),$(CXXFLAGS)) $(COPTS_$(*F)) $(INCLUDES) $(CMACRO) -c "$<" -o "$@" -MMD -MD -MF "$(@:$(OBJODIR)/$(notdir $(shell pwd))/%.o=$(OBJODIR)/$(notdir $(shell pwd))/%.o.d)" -MT "$(@)"
 $(OBJODIR)/$(notdir $(shell pwd))/%.o: %.S
 	@mkdir -p $(OBJODIR)/$(notdir $(shell pwd))
 	$(ASM) $(ASMFLAGS) $(INCLUDES) $(CMACRO) -c "$<" -o "$@"

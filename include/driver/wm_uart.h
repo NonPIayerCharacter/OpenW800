@@ -100,7 +100,8 @@ enum
     TLS_UART_2 = 2,
     TLS_UART_3 = 3,
     TLS_UART_4 = 4,
-    TLS_UART_MAX = 5,
+    TLS_UART_5 = 5,    
+    TLS_UART_MAX = 6,
 };
 
 
@@ -222,6 +223,26 @@ volatile   u32 head;
 volatile   u32 tail;
 } tls_uart_circ_buf_t;
 
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR
+/**
+ * @typedef struct tls_uart_net_buf
+ */
+typedef struct tls_uart_net_buf
+{
+    struct dl_list list;
+    char *buf;
+	void *pbuf;
+    u16 buflen;
+    u16 offset;
+} tls_uart_net_buf_t;
+
+typedef struct tls_uart_net_msg
+{
+    struct dl_list tx_msg_pending_list;
+} tls_uart_net_msg_t;
+#endif
+
+
 /**
  * @typedef struct TLS_UART_REGS
  */
@@ -287,7 +308,7 @@ typedef struct tls_uart_port
     s16(*rx_callback) (u16 len, void* priv_data);
 
     s16(*tx_callback) (struct tls_uart_port * port);
-    s16(*tx_free_callback) (struct tls_uart_port * port);
+    s16(*tx_sent_callback) (struct tls_uart_port * port);
 
     bool tx_dma_on;
 	bool rx_dma_on;
@@ -332,7 +353,7 @@ typedef struct tls_uart_tx_msg
  * @brief	This function is used to initial uart port.
  *
  * @param[in] uart_no: is the uart number.
- *	- \ref TLS_UART_0 TLS_UART_1 TLS_UART_2 TLS_UART_3 TLS_UART_4
+ *	- \ref TLS_UART_0 TLS_UART_1 TLS_UART_2 TLS_UART_3 TLS_UART_4 TLS_UART_5
  * @param[in] opts: is the uart setting options,if this param is NULL,this function will use the default options.
  * @param[in] modeChoose:; choose uart2 mode or 7816 mode when uart_no is TLS_UART_2, 0 for uart2 mode and 1 for 7816 mode.
  *
@@ -357,6 +378,8 @@ int tls_uart_port_init(u16 uart_no, tls_uart_options_t * opts, u8 modeChoose);
  */
 void tls_uart_rx_callback_register(u16 uart_no, s16(*rx_callback) (u16 len, void* user_data), void* user_data);
 
+void tls_uart_rx_byte_callback_flag(u16 uart_no, u8 flag);
+
 /**
  * @brief	This function is used to register uart tx interrupt.
  *
@@ -380,6 +403,19 @@ void tls_uart_tx_callback_register(u16 uart_no, s16(*tx_callback) (struct tls_ua
  * @note           None
  */
 int tls_uart_read(u16 uart_no, u8 * buf, u16 readsize);
+
+/**
+ * @brief          This function is used to check the available data in the cache buffer.
+ *
+ * @param[in]      uart_no    is the uart numer
+ * @param[in]      readsize   is the user read size
+ *
+ * @retval         if the cache buffer size is greater or equals to readsize , then return readsize; otherwise return 0;
+ *
+ * @note           None
+ */
+
+int tls_uart_try_read(u16 uart_no, int32_t read_size);
 
 
 /**
@@ -461,7 +497,33 @@ int tls_uart_set_stop_bits(u16 uart_no, TLS_UART_STOPBITS_T stopbits);
  */
 void tls_uart_push(int uart_no, u8* data, int length);
 
+
+/**
+ * @brief          This function is used to transfer data asynchronously.
+ *
+ * @param[in]      uart_no      is the uart number
+ * @param[in]      buf            is a buf for saving user data
+ * @param[in]      writesize    is the user data length
+ *
+ * @retval         WM_SUCCESS    tx success
+ * @retval         WM_FAILED       tx failed
+ *
+ * @note           None
+ */
+
 int tls_uart_write_async(u16 uart_no, char *buf, u16 writesize);
+
+/**
+ * @brief	This function is used to register uart tx sent callback function.
+ *
+ * @param[in] uart_no: is the uart numer.
+ * @param[in] callback: is the uart tx sent out call back function.
+ *
+ * @retval
+ */
+
+void tls_uart_tx_sent_callback_register(u16 uart_no, s16(*tx_callback) (struct tls_uart_port *port));
+
 
 
 #endif /* WM_UART_H */

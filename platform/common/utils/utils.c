@@ -17,7 +17,7 @@
 #include "wm_mem.h"
 #include "tls_common.h"
 #include "wm_debug.h"
-//#include "wm_sockets.h"
+#include "wm_sockets.h"
 #include "utils.h"
 
 
@@ -454,8 +454,8 @@ char * strndup(const char *s, size_t len)
 	memcpy(ret, s, len);
 	return ret;
 }
-#if 0
-int gettimeofday(struct timeval *tv, void *tz)
+#if 1
+int gettimeofday(struct timeval *tv, struct timezone *tz)
 {
 	int ret = 0;
 	u32 current_tick; 
@@ -501,7 +501,7 @@ void dumpUint32(char *name, uint32_t* buffer, int len)
 	printf("%s:\n", name);
 	for(; i < len; i++)
 	{
-		printf("%08X ", buffer[i]);
+		printf("%08x ", buffer[i]);
 		if((i + 1) % 8 == 0)
 		{
 			printf("\n");

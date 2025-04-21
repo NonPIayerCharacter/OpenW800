@@ -298,6 +298,160 @@ typedef  struct _HOSTIF_CMD_PARAMS_WPS {
     u8      pin[1];
 }__attribute__((packed))HOSTIF_CMD_PARAMS_WPS;
 
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_NUM {
+    u32    param;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_NUM;
+
+
+typedef  struct HOSTIF_CMD_PARAMS_BTPARAM_UDATA {
+    u8      param[128];
+    u16     param_len;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_UDATA;    
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_STR {
+    u8    param[16];
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_STR;
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_ADDLK {
+    u16   net_idx;
+    u16   app_idx;
+    u8    param[16];
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_ADDLK;
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_ADDRK {
+    u16   net_idx;
+    u16   addr;
+    u16   key_net_idx;
+    u16   key_app_idx;
+    u8    param[16];
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_ADDRK;
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_BAK {
+    u16   net_idx;
+    u16   dst;
+    u16   elem_addr;
+    u16   app_key_idx;
+    u16   mod_id;
+    u16   cid;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_BAK;
+
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_RELAY {
+    u16 net_idx;
+    u16 dst;
+    u8  val;
+    u8  count;
+    u8  interval;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_RELAY;    
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_PROXY {
+    u16 net_idx;
+    u16 dst;
+    u8  val;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_PROXY;  
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_SUB_GET {
+    u16 net_idx;
+    u16 dst;
+    u16 elem_addr;
+    u16 mod_id;
+    u16 cid;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_SUB_GET; 
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_PUB_SET {
+    u16 net_idx;
+    u16 dst;
+    u16 elem_addr;
+    u16 mod_id;
+    /**pub param*/
+    u16 pub_addr;
+    u16 pub_app_idx;
+    u8 pub_cred_flag;
+    u8 pub_ttl;
+    u8 pub_period;
+    u8 pub_count;
+    u8 pub_interval;
+    u16 cid;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_PUB_SET; 
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_HB_PUB_SET {
+    u16 net_idx;
+    u16 net_dst;
+    /**hb pub param*/
+    u16 hb_pub_dst;
+    u8  hb_pub_count;
+    u8  hb_pub_period;
+    u8  hb_pub_ttl;
+    u16 hb_pub_feat;
+    u16 hb_pub_net_idx;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_HB_PUB_SET; 
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_HB_SUB_SET {
+    u16 net_idx;
+    u16 net_dst;
+    /**hb Sub param*/
+    u16 hb_sub_src;
+    u16 hb_sub_dst;
+    u8  hb_sub_period;
+    u8  hb_sub_count;
+    u8  hb_sub_min;
+    u8  hb_sub_max;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_HB_SUB_SET; 
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_SUB_ADD {
+    u16 net_idx;
+    u16 dst;
+    u16 elem_addr;
+    u16 sub_addr;
+    u16 mod_id;
+    u16 cid;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_SUB_ADD; 
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_ONOFF_SET {
+    u16 net_idx;
+    u16 dst;
+    u16 app_idx;
+    s16 val;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_ONOFF_SET;
+
+typedef  struct _HOSTIF_CMD_PARAMS_BTPARAM_ONOFF_GET {
+    u16 net_idx;
+    u16 dst;
+    u16 app_idx;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTPARAM_ONOFF_GET;
+
+
+typedef  struct _HOSTIF_CMD_PARAMS_BT2PARAM {
+    u16    param1;
+    u16    param2;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BT2PARAM;
+
+typedef  struct _HOSTIF_CMD_PARAMS_BT_PROV {
+    u8    uuid[16];
+    u16   net_idx;
+    u16   addr;
+    u8    attention;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BT_PROV;
+
+
+
 typedef  struct _HOSTIF_CMD_PARAMS_BT {
     u8      cmd;
     enum    tls_cmd_mode cmd_mode;
@@ -309,9 +463,15 @@ typedef  struct _HOSTIF_CMD_PARAMS_BTCTRL {
 	enum    tls_cmd_mode cmd_mode;
 }__attribute__((packed))HOSTIF_CMD_PARAMS_BTCTRL;
 
+typedef  struct _HOSTIF_CMD_PARAMS_BTNAME {
+    char    name[16];
+    u8      len;
+    enum    tls_cmd_mode cmd_mode;
+}__attribute__((packed))HOSTIF_CMD_PARAMS_BTNAME;
+
 typedef  struct _HOSTIF_CMD_PARAMS_BLEADV {
     u8      len;
-    u8      data[21];
+    u8      data[31];
 	u8      include_name;
 	enum    tls_cmd_mode cmd_mode;
 }__attribute__((packed))HOSTIF_CMD_PARAMS_BLEADV;
@@ -365,6 +525,7 @@ typedef  struct _HOSTIF_CMD_PARAMS_BLESTT {
     u8      tran_type;
     enum    tls_cmd_mode cmd_mode;
 }__attribute__((packed))HOSTIF_CMD_PARAMS_BLESTT;
+
 typedef  struct _HOSTIF_CMD_PARAMS_BLESNDIND {
     u8      server_if;
     u16     attr_handle;
@@ -380,7 +541,6 @@ typedef  struct _HOSTIF_CMD_PARAMS_BLESNDRSP {
 	u8      value[21];
 	enum    tls_cmd_mode cmd_mode;
 }__attribute__((packed))HOSTIF_CMD_PARAMS_BLESNDRSP;
-
 
 typedef struct _HOSTIF_CMD_PARAMS_BLECONN {
     u8      server_if;
@@ -400,6 +560,7 @@ typedef struct _HOSTIF_CMD_PARAMS_BLENTY {
     u8      client_if;
     u8      addr[6];
     u16     attr_handle;
+    u16     conn_id;
     enum    tls_cmd_mode cmd_mode;
 }__attribute__((packed))HOSTIF_CMD_PARAMS_BLENTY;
 
@@ -522,7 +683,7 @@ typedef struct _HOSTIF_CMD_PARAMS_FLSW {
 
 typedef struct _HOSTIF_CMD_PARAMS_UPDM {
     u8      mode;
-    u8      src;/* 标识来自at 0, 还是ri 1 */
+    u8      src;/* 鏍囪瘑鏉ヨ嚜at 0, 杩樻槸ri 1 */
 }__attribute__((packed))HOSTIF_CMD_PARAMS_UPDM;
 
 typedef struct _HOSTIF_CMD_PARAMS_UPDD {
@@ -640,7 +801,7 @@ typedef struct HOSTIF_CMD_PARAMS_TXGR{
  }__attribute__((packed))HOSTIF_CMD_PARAMS_LPCHL;
 
  typedef struct HOSTIF_CMD_PARAMS_LPTSTR {
- 	u32      channel;
+ 	u32      tempcomp;
     u32      packetcount;
     u32      psdulen;
     u32      txgain;
@@ -689,10 +850,17 @@ typedef struct HOSTIF_CMD_PARAMS_TXGR{
  typedef struct _HOSTIF_CMD_PARAMS_FREQERR{
     int freqerr;
  }	__attribute__((packed))HOSTIF_CMD_PARAMS_FREQERR;
- typedef  struct _HOSTIF_CMD_PARAMS_VCGCTRL{
-    int vcg;
- }__attribute__((packed))HOSTIF_CMD_PARAMS_VCGCTRL;
+ typedef  struct _HOSTIF_CMD_PARAMS_CALFIN{
+    int val;
+ }__attribute__((packed))HOSTIF_CMD_PARAMS_CALFIN;
 
+ typedef  struct _HOSTIF_CMD_PARAMS_SCANPARAM{
+    enum tls_cmd_mode mode;
+	u16 scantimes; 
+	u16 chlist;
+	u16 switchinterval;
+	u16 scantype;	
+ }__attribute__((packed))HOSTIF_CMD_PARAMS_SCANPARAM;
 
 
  union HOSTIF_CMD_PARAMS_UNION{
@@ -735,9 +903,44 @@ typedef struct HOSTIF_CMD_PARAMS_TXGR{
 
         HOSTIF_CMD_PARAMS_WPS wps;
 
+        HOSTIF_CMD_PARAMS_BT_PROV btprov;            /**provision via PB-ADV*/
+
+        HOSTIF_CMD_PARAMS_BT2PARAM bt2param;
+        HOSTIF_CMD_PARAMS_BTPARAM_UDATA btparamudata; /**mesh vnd data*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_NUM btparamnum;    /**oob number*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_STR btparamstr;    /**oob string*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_ADDLK btparamalk; /**add local app key*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_ADDRK btparamark; /**add app key*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_BAK btparambak;       /**bind/unbind app key*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_RELAY btparamrelay; /**relay config*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_PROXY btparamproxy; /**proxy config*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_SUB_ADD btparamsubadd;  /**subscribe addr add/del*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_SUB_GET btparamsubget; /**subscribe addr get*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_PUB_SET btparampubset; /**publication set*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_HB_PUB_SET btparamhbpubset; /**heartbeat publication set*/
+        
+        HOSTIF_CMD_PARAMS_BTPARAM_HB_SUB_SET btparamhbsubset; /**heartbeat subscription set*/
+
+        HOSTIF_CMD_PARAMS_BTPARAM_ONOFF_SET btparamonoffset;
+
+        HOSTIF_CMD_PARAMS_BTPARAM_ONOFF_GET btparamonoffget;
+
         HOSTIF_CMD_PARAMS_BT bt;
 
         HOSTIF_CMD_PARAMS_BTCTRL btctrl;
+
+        HOSTIF_CMD_PARAMS_BTNAME btname;
 
         HOSTIF_CMD_PARAMS_BLEADV bleadv;
 
@@ -865,9 +1068,10 @@ typedef struct HOSTIF_CMD_PARAMS_TXGR{
 	HOSTIF_CMD_PARAMS_TXLO   txLO;
 	HOSTIF_CMD_PARAMS_TXIQ    txIQ;
 	HOSTIF_CMD_PARAMS_FREQERR  FreqErr;
-	HOSTIF_CMD_PARAMS_VCGCTRL vcgCtrl;
+	HOSTIF_CMD_PARAMS_CALFIN calfin;
 	HOSTIF_CMD_PARAMS_PING  ping;
 	HOSTIF_CMD_PARAMS_THT	tht;
+	HOSTIF_CMD_PARAMS_SCANPARAM scanparam;
     }; 
 struct tls_hostif_cmd {
     struct tls_hostif_cmd_hdr cmd_hdr;
@@ -983,8 +1187,78 @@ typedef struct _HOSTIF_CMDRSP_PARAMS_WPS {
     u8      pin[1];
 }__attribute__((packed))HOSTIF_CMDRSP_PARAMS_WPS; 
 
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_PUB {
+    u8 status;
+    u16  addr;
+    u16  app_idx;
+    u8  cred_flag;
+    u8   ttl;
+    u8   period;
+    u8   transmit;
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_PUB;
+
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_HB_PUB {
+    u8 status;
+    u16 dst;
+    u8  count;
+    u8  period;
+    u8  ttl;
+    u16 feat;
+    u16 net_idx;
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_HB_PUB; 
+
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_HB_SUB {
+    u8 status;
+    u16 src;
+    u16 dst;
+    u8  period;
+    u8  count;
+    u8  min;
+    u8  max;
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_HB_SUB; 
+
+
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_PRIMARY_CFG {
+    u8 status;
+    u8 net_transmit_count;         /* Network Transmit state */
+    u8 net_transmit_intvl;         /* Network Transmit state */
+    u8 relay;                /* Relay Mode state */
+    u8 relay_retransmit_count;     /* Relay Retransmit state */
+    u8 relay_retransmit_intvl;     /* Relay Retransmit state */
+    u8 beacon;               /* Secure Network Beacon state */
+    u8 gatt_proxy;           /* GATT Proxy state */
+    u8 frnd;                 /* Friend state */
+    u8 default_ttl;          /* Default TTL */
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_PRIMARY_CFG; 
+
+
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_SUB {
+    u8 status;
+    u16 subs[16];
+    u16 sub_cnt;
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_SUB; 
+
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_RELAY {
+    u8 status;
+    u8 state;
+    u8 count;
+    u8 interval;
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_RELAY; 
+
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_RESP {
+    u8 status;
+    u8 state;
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_RESP; 
+
+
+typedef struct _HOSTIF_CMDRSP_PARAMS_MESH_COMP_DATA {
+    u8 status;
+    char data[128];
+    u32 data_len;
+}__attribute__((packed))HOSTIF_CMDRSP_PARAMS_MESH_COMP_DATA; 
+
 typedef struct _HOSTIF_CMDRSP_PARAMS_BT {
-    u8      status;
+    u16      status;
 }__attribute__((packed))HOSTIF_CMDRSP_PARAMS_BT;
 
 typedef struct _HOSTIF_CMDRSP_PARAMS_BLEPOW {
@@ -1224,9 +1498,9 @@ typedef struct _HOSTIF_CMDRSP_PARAMS_CUSTDATA {
   typedef  struct _HOSTIF_CMDRSP_PARAMS_FREQERR{
     int freqerr;
  }	__attribute__((packed))HOSTIF_CMDRSP_PARAMS_FREQERR;
-  typedef  struct _HOSTIF_CMDRSP_PARAMS_VCGCTRL{
-    int vcg;
- }	__attribute__((packed))HOSTIF_CMDRSP_PARAMS_VCGCTRL;
+  typedef  struct _HOSTIF_CMDRSP_PARAMS_CALFIN{
+    int val;
+ }	__attribute__((packed))HOSTIF_CMDRSP_PARAMS_CALFIN;
   typedef struct _HOSTIF_CMDRSP_PARAMS_PING {
 	u32      ext;
 	u32      ttl;
@@ -1271,6 +1545,22 @@ union HOSTIF_CMDRSP_PARAMS_UNION{
 
         HOSTIF_CMDRSP_PARAMS_WPS wps; 
 
+        HOSTIF_CMDRSP_PARAMS_MESH_PRIMARY_CFG mesh_primary_cfg;
+
+        HOSTIF_CMDRSP_PARAMS_MESH_PUB mesh_pub;
+
+        HOSTIF_CMDRSP_PARAMS_MESH_SUB mesh_sub;
+
+        HOSTIF_CMDRSP_PARAMS_MESH_HB_PUB mesh_hb_pub;
+
+        HOSTIF_CMDRSP_PARAMS_MESH_HB_SUB mesh_hb_sub;
+
+        HOSTIF_CMDRSP_PARAMS_MESH_COMP_DATA comp_data;
+
+        HOSTIF_CMDRSP_PARAMS_MESH_RELAY mesh_relay;
+
+        HOSTIF_CMDRSP_PARAMS_MESH_RESP mesh_resp;
+
         HOSTIF_CMDRSP_PARAMS_BT bt;
 
         HOSTIF_CMDRSP_PARAMS_BLEPOW blepow;
@@ -1280,6 +1570,8 @@ union HOSTIF_CMDRSP_PARAMS_UNION{
         HOSTIF_CMDRSP_PARAMS_BLECONN bleconn;
 
         HOSTIF_CMDRSP_PARAMS_BLEGATT blegatt;
+
+        HOSTIF_CMD_PARAMS_BTNAME btname;
 
         HOSTIF_CMDRSP_PARAMS_NIP nip; 
 
@@ -1367,7 +1659,7 @@ union HOSTIF_CMDRSP_PARAMS_UNION{
 	HOSTIF_CMDRSP_PARAMS_TXLO  txLO;
 	HOSTIF_CMDRSP_PARAMS_TXIQ  txIQ;
 	HOSTIF_CMDRSP_PARAMS_FREQERR FreqErr;
-	HOSTIF_CMDRSP_PARAMS_VCGCTRL vcgCtrl;
+	HOSTIF_CMDRSP_PARAMS_CALFIN calfin;
 
         HOSTIF_CMDRSP_PARAMS_PING ping;
 } ; 
@@ -1472,10 +1764,17 @@ struct tls_hostif_tx_msg {
 #define HOSTIF_TX_MSG_TYPE_UDP         2
 #define HOSTIF_TX_MSG_TYPE_TCP         3
 
-#define TLS_SOCKET_RECV_BUF_SIZE   512
+/*buf size must be power of 2, like 2,4,8,16,...512,1024,2048,4096,8192....*/
+#define TLS_SOCKET_RECV_BUF_SIZE   1024
 
-#define ATCMD_MAX_ARG      10
-#define ATCMD_NAME_MAX_LEN 10
+/*AT SKRCV command max size received from buffer each time command executed*/
+#define AT_SKRCV_CMD_RECV_MAX_SIZE_PER_TIME  1024
+/*AT command response buf size*/
+#define AT_CMD_RSP_BUF_SIZE    (512 + AT_SKRCV_CMD_RECV_MAX_SIZE_PER_TIME) 
+
+
+#define ATCMD_MAX_ARG      16
+#define ATCMD_NAME_MAX_LEN 16
 
 struct tls_atcmd_token_t {
     char   name[ATCMD_NAME_MAX_LEN];
@@ -1501,6 +1800,8 @@ typedef void  (*hostif_send_tx_msg_callback)(u8 hostif_mode, struct tls_hostif_t
 #define UART_ATCMD_BIT_BT        (3)
 #define UART_ATCMD_BIT_ACTIVE_BT (4)
 #define UART_ATCMD_BIT_ACTIVE_BT_DM (5)
+#define UART_ATCMD_BIT_ACTIVE_BT_DM_EXT (6)
+
 
 struct tls_hostif {
     tls_os_timer_t          *tx_timer;
@@ -1586,7 +1887,12 @@ int tls_hostif_set_net_status_callback(void);
 int tls_hostif_send_data(struct tls_hostif_socket_info *skt_info, char *buf, u32 buflen);
 int tls_hostif_create_default_socket(void);
 int tls_hostif_close_default_socket(void);
+
+#if TLS_CONFIG_CMD_NET_USE_LIST_FTR	
+struct tls_uart_net_msg * tls_hostif_get_recvmit(int socket_num);
+#else
 struct tls_uart_circ_buf * tls_hostif_get_recvmit(int socket_num);
+#endif
 int tls_cmd_create_socket(struct tls_cmd_socket_t *skt,
         enum tls_cmd_mode cmd_mode);
 int tls_cmd_close_socket(u8 skt_num);
