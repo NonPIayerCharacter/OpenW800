@@ -646,6 +646,29 @@ void vPortGetHeapStats(HeapStats_t* pxHeapStats)
 	taskEXIT_CRITICAL();
 }
 
+void* pvPortRealloc(void* mem, size_t newsize)
+{
+	if(newsize == 0)
+	{
+		vPortFree(mem);
+		return NULL;
+	}
+
+	vTaskSuspendAll();
+	void* p;
+	p = pvPortMalloc(newsize);
+	if(p)
+	{
+		if(mem != NULL)
+		{
+			memcpy(p, mem, newsize);
+			vPortFree(mem);
+		}
+	}
+	xTaskResumeAll();
+	return p;
+}
+
 //////////////////////////////////////////////////////////////////////
 // user export functions
 
